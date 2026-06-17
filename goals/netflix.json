@@ -1,0 +1,12 @@
+{
+  "mode": "steps",
+  "goal": "Open Netflix and play a movie",
+  "app_package": "com.netflix.mediaclient",
+  "steps": [
+    "Launch and open Netflix",
+    "Wait for Netflix home screen to load",
+    "Tap any movie or show thumbnail on the home screen",
+    "Tap the Play button on the detail page",
+    "Verify the video player is active and playing"
+  ]
+}

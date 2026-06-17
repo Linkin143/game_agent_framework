@@ -1,0 +1,31 @@
+{
+  "comment": "TEMPLATE — Copy this file and fill in your game details",
+
+  "mode": "oneliner",
+
+  "goal": "Launch [YOUR GAME NAME] and go to gameplay",
+
+  "app_package": "com.example.yourgame",
+
+  "notes": [
+    "OPTION 1 — One-liner mode (recommended for most games):",
+    "  Just write ONE sentence in 'goal'. The AI figures out everything.",
+    "  Example: 'Launch Bloons TD6 and go to gameplay'",
+    "  Example: 'Play Clash of Clans'",
+    "  Example: 'Open Candy Crush and start a level'",
+    "",
+    "OPTION 2 — Steps mode (use when you want precise control):",
+    "  Change 'mode' to 'steps' and add a 'steps' array.",
+    "  Each step is a plain English sentence.",
+    "  The AI reads each step and executes it on the live screen.",
+    "",
+    "OPTION 3 — Command line (quickest):",
+    "  python run_game.py \"Launch [GameName] and go to gameplay\"",
+    "  python run_game.py \"Play Bloons TD6\" --package com.ninjakiwi.bloonstd6",
+    "",
+    "HOW GOALS ARE PROCESSED:",
+    "  oneliner → AI auto-decomposes into 5 subgoals",
+    "  steps    → AI executes each step sequentially on the live screen",
+    "  Both modes use the same SENSE→TEST→ACT→VERIFY loop for every action"
+  ]
+}

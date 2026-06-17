@@ -1,0 +1,5 @@
+{
+  "mode": "oneliner",
+  "goal": "Launch Subway Surfers and go to gameplay",
+  "app_package": "com.kiloo.subwaysurf"
+}

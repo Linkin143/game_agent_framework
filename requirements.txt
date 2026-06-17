@@ -1,0 +1,34 @@
+# ============================================================
+# game_agent_framework — Dependencies
+# Install: pip install -r requirements.txt
+# ============================================================
+
+# ── Appium ──────────────────────────────────────────────────
+Appium-Python-Client>=3.1.0
+
+# ── LangChain + LangGraph ───────────────────────────────────
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-anthropic>=0.1.15
+langgraph>=0.1.14
+anthropic>=0.27.0
+
+# ── Computer Vision ─────────────────────────────────────────
+opencv-python>=4.9.0.80
+numpy>=1.26.0
+
+# ── OCR ─────────────────────────────────────────────────────
+easyocr>=1.7.1          # Primary OCR backend
+# pytesseract>=0.3.10   # Alternative: pip install pytesseract (requires Tesseract binary)
+
+# ── Image Hashing (Memory Agent replay buffer) ──────────────
+imagehash>=4.3.1
+Pillow>=10.0.0
+
+# ── HTML/XML Parsing ────────────────────────────────────────
+beautifulsoup4>=4.12.0
+lxml>=5.1.0
+
+# ── Environment & Utilities ─────────────────────────────────
+python-dotenv>=1.0.0
+typing-extensions>=4.9.0

@@ -1,0 +1,19 @@
+{
+  "suite_name": "Bloons TD 6 Netflix GamePlay",
+  "description": "End-to-end NLP-driven test of the Netflix Android game play workflow.",
+  "app": {
+    "package":  "com.netflix.NGP.BloonsTDSix",
+    "activity": ".UnityPlayerActivity"
+  },
+  "steps": [
+    "Launch the game and wait for 40 seconds to welcome screen to load",
+    "Tap on 'Start' which led you to Play Screen of game",
+    "wait for the Play screen to load",
+    "Tap the 'Play' and wait for the 'MONKEY MEADOW' screen",
+    "Tap the 'MONKEY MEADOW' and wait for next 'EASY' screen",
+    "Tap the 'EASY' and wait for next 'STANDARD' screen",
+    "Tap the 'STANDARD'",
+    "Tap right facing tilt triangle four times in interval of one second gap",
+    "Exit the game"
+  ]
+}

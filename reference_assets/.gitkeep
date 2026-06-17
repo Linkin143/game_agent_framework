@@ -1,0 +1,9 @@
+# Place game UI template PNG files here for OpenCV template matching.
+# Examples:
+#   play_button.png        — The PLAY button on any game's main menu
+#   bloons_play_btn.png    — Bloons TD6 specific PLAY button
+#   dismiss_x.png          — Generic close/dismiss X button
+#   loading_spinner.png    — Loading indicator (to detect loading screens)
+#
+# Naming convention: <game_name>_<element_name>.png  or  <generic_element>.png
+# Threshold: 0.75 (configurable in .env as TEMPLATE_THRESHOLD)
