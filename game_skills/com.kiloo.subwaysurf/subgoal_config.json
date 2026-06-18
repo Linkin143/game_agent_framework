@@ -1,0 +1,38 @@
+{
+  "_comment": "Per-game subgoal configuration for Subway Surfers. Package: com.kiloo.subwaysurf",
+
+  "subgoal_order": [
+    "APP_LAUNCH",
+    "DISMISS_POPUPS",
+    "NAVIGATE_TO_MAIN_MENU",
+    "START_RUN",
+    "VERIFY_GAMEPLAY"
+  ],
+
+  "subgoal_confirmations": {
+    "APP_LAUNCH": {
+      "require_any": [],
+      "exclude_if":  []
+    },
+
+    "DISMISS_POPUPS": {
+      "require_any": ["TAP", "START", "PLAY", "RUN"],
+      "exclude_if":  ["ALLOW", "ACCEPT", "CLAIM", "UPDATE"]
+    },
+
+    "NAVIGATE_TO_MAIN_MENU": {
+      "require_any": ["TAP", "START", "PLAY", "RUN", "SWIPE"],
+      "exclude_if":  ["SCORE", "COINS", "HIGH", "GAME OVER"]
+    },
+
+    "START_RUN": {
+      "require_any": ["SCORE", "COINS", "KEYS", "MULTIPLIER"],
+      "exclude_if":  ["TAP TO START", "PLAY", "HOME", "GAME OVER"]
+    },
+
+    "VERIFY_GAMEPLAY": {
+      "require_any": ["SCORE", "COINS", "KEYS"],
+      "exclude_if":  ["TAP TO START", "PLAY", "HOME", "GAME OVER", "HIGH SCORE"]
+    }
+  }
+}

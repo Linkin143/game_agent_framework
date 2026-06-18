@@ -8,5 +8,12 @@
     "Tap any movie or show thumbnail on the home screen",
     "Tap the Play button on the detail page",
     "Verify the video player is active and playing"
-  ]
+  ],
+
+  "gameplay_phase": {
+    "enabled": true,
+    "duration_seconds": 300,
+    "action_interval_seconds": 15,
+    "comment": "After playback confirmed, GameplayAgent monitors for 5 min: skips intros, handles still-watching dialogs, resumes if paused."
+  }
 }

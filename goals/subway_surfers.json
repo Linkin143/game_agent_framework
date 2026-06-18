@@ -1,5 +1,12 @@
 {
   "mode": "oneliner",
   "goal": "Launch Subway Surfers and go to gameplay",
-  "app_package": "com.kiloo.subwaysurf"
+  "app_package": "com.kiloo.subwaysurf",
+
+  "gameplay_phase": {
+    "enabled": true,
+    "duration_seconds": 300,
+    "action_interval_seconds": 3,
+    "comment": "GameplayAgent plays Subway Surfers for 5 minutes using swipe tactics + VLM."
+  }
 }

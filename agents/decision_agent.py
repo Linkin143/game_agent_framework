@@ -53,7 +53,7 @@ class DecisionAgent(BaseAgent):
 
     Process:
     1. Build context: annotated screenshot + OCR table + XML summary + subgoal
-    2. Include game navigation skill as additional context
+    2. Include game navigation skill + game-specific skill as additional context
     3. Call VLM to analyze and plan
     4. Parse JSON response into DecisionPlan
     5. Fallback to heuristics if LLM fails
@@ -61,12 +61,20 @@ class DecisionAgent(BaseAgent):
 
     SKILL_FILE = "02_decision_skill.md"
 
-    def __init__(self, llm) -> None:
+    def __init__(self, llm, game_skill: str = "") -> None:
         super().__init__(llm=llm, skill_file=self.SKILL_FILE)
-        # Load game navigation skill as supplementary context
-        self._nav_skill = self._load_skill("06_game_navigation_skill.md")
-        self._ue5_skill = self._load_skill("07_unreal_engine_skill.md")
+        # Load generic engine/navigation skills
+        self._nav_skill   = self._load_skill("06_game_navigation_skill.md")
+        self._ue5_skill   = self._load_skill("07_unreal_engine_skill.md")
         self._unity_skill = self._load_skill("08_unity_skill.md")
+        # Game-specific skill: loaded by GameSkillLoader and injected at init
+        # This text is ONLY for the currently launched game package — never mixed
+        self._game_skill  = game_skill
+        if game_skill:
+            print(f"[decision_agent] Game-specific skill loaded "
+                  f"({len(game_skill)} chars) — will inject into every VLM call")
+        else:
+            print("[decision_agent] No game-specific skill — using generic skills only")
 
     def decide(
         self,
@@ -113,6 +121,24 @@ class DecisionAgent(BaseAgent):
         elif eng == "UNREAL":
             extra_system = f"\n\n## Engine-Specific Context\n{self._ue5_skill[:1200]}"
         extra_system += f"\n\n## Game Navigation Reference\n{self._nav_skill[:800]}"
+
+        # ── GAME-SPECIFIC SKILL: Injected ONLY for the launched game's package ──
+        # This provides precise gameplay instructions (HUD layout, button coords,
+        # OCR keywords, navigation flow) specific to the current game.
+        # It is loaded once at startup by GameSkillLoader and NEVER mixed with
+        # skills from other games.
+        if self._game_skill:
+            extra_system += (
+                f"\n\n{'═'*60}\n"
+                f"## GAME-SPECIFIC GAMEPLAY INSTRUCTIONS (HIGH PRIORITY)\n"
+                f"The following instructions are specific to THIS game's package.\n"
+                f"They override generic navigation rules when there is a conflict.\n"
+                f"Use the HUD keywords, coordinates, and navigation sequence below\n"
+                f"to make precise decisions for the current subgoal.\n"
+                f"{'═'*60}\n"
+                f"{self._game_skill[:3000]}\n"
+                f"{'═'*60}\n"
+            )
 
         # Step 3: LLM call — receives screenshot + XML + OCR + hint
         result = self.call_llm(

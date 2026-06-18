@@ -147,7 +147,7 @@ class ActionExecutor:
         screen_h: int = 2400,
         percent:  float = 0.6,
     ) -> ActionResult:
-        """Execute a swipe gesture in the specified direction."""
+        """Execute a swipe gesture in the specified direction (center-based)."""
         try:
             self._driver.execute_script("mobile: swipeGesture", {
                 "left":      screen_w // 4,
@@ -161,6 +161,216 @@ class ActionExecutor:
             return ActionResult(success=True, method=f"swipe_{direction}")
         except Exception as e:
             return ActionResult(success=False, method="swipe", error=str(e))
+
+    def swipe_from_to(
+        self,
+        start_x: int,
+        start_y: int,
+        end_x:   int,
+        end_y:   int,
+        duration_ms: int = 400,
+    ) -> ActionResult:
+        """
+        Swipe from an explicit start coordinate to an end coordinate.
+        Used for sidebar scrolls, map panning, and any gesture that cannot
+        use the generic center-based swipe.
+        Primary: ADB input swipe (reliable on all Android versions).
+        Fallback: W3C pointer actions.
+        """
+        try:
+            cmd = self._adb_prefix + [
+                "shell", "input", "swipe",
+                str(start_x), str(start_y),
+                str(end_x), str(end_y),
+                str(duration_ms),
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=5.0)
+            if result.returncode == 0:
+                self._wait()
+                return ActionResult(success=True, method="adb_swipe",
+                                    coordinates={"startX": start_x, "startY": start_y,
+                                                 "endX": end_x, "endY": end_y})
+        except Exception:
+            pass
+
+        # W3C pointer fallback
+        try:
+            self._driver.execute_script("mobile: scrollGesture", {
+                "left":    min(start_x, end_x),
+                "top":     min(start_y, end_y),
+                "width":   abs(end_x - start_x) or 10,
+                "height":  abs(end_y - start_y) or 10,
+                "direction": "up" if end_y < start_y else "down" if end_y > start_y
+                              else "left" if end_x < start_x else "right",
+                "percent": 0.8,
+            })
+            self._wait()
+            return ActionResult(success=True, method="scrollGesture_fallback",
+                                coordinates={"startX": start_x, "startY": start_y,
+                                             "endX": end_x, "endY": end_y})
+        except Exception as e:
+            return ActionResult(success=False, method="swipe_from_to", error=str(e))
+
+    def drag_and_drop(
+        self,
+        start_x:     int,
+        start_y:     int,
+        end_x:       int,
+        end_y:       int,
+        duration_ms: int = 1200,
+    ) -> ActionResult:
+        """
+        Drag from (start_x, start_y) to (end_x, end_y) with a hold.
+        Essential for: tower placement in Bloons TD6, slider drag, item drag.
+        Primary: mobile:dragGesture (Appium 2.x / UiAutomator2).
+        Fallback: ADB long-press + swipe.
+        """
+        try:
+            self._driver.execute_script("mobile: dragGesture", {
+                "startX": start_x,
+                "startY": start_y,
+                "endX":   end_x,
+                "endY":   end_y,
+                "speed":  max(1, int(1000 * abs(((end_x - start_x)**2 + (end_y - start_y)**2)**0.5)
+                                     / duration_ms)),
+            })
+            self._wait()
+            return ActionResult(success=True, method="dragGesture",
+                                coordinates={"startX": start_x, "startY": start_y,
+                                             "endX": end_x, "endY": end_y})
+        except Exception:
+            pass
+
+        # ADB fallback: long-press at start, then swipe to end
+        try:
+            # Long press at start position
+            cmd_lp = self._adb_prefix + [
+                "shell", "input", "swipe",
+                str(start_x), str(start_y),
+                str(start_x), str(start_y),
+                str(duration_ms // 3),   # hold in place first
+            ]
+            subprocess.run(cmd_lp, capture_output=True, timeout=5.0)
+            # Then drag to end
+            cmd_drag = self._adb_prefix + [
+                "shell", "input", "swipe",
+                str(start_x), str(start_y),
+                str(end_x), str(end_y),
+                str(duration_ms),
+            ]
+            result = subprocess.run(cmd_drag, capture_output=True, timeout=5.0)
+            self._wait()
+            if result.returncode == 0:
+                return ActionResult(success=True, method="adb_drag",
+                                    coordinates={"startX": start_x, "startY": start_y,
+                                                 "endX": end_x, "endY": end_y})
+        except Exception as e:
+            return ActionResult(success=False, method="drag_and_drop", error=str(e))
+
+        return ActionResult(success=False, method="drag_and_drop",
+                            error="Both dragGesture and ADB drag failed")
+
+    def double_tap_at(self, x: int, y: int) -> ActionResult:
+        """
+        Double-tap at a coordinate.
+        Primary: mobile:doubleClickGesture (Appium 2.x).
+        Fallback: two rapid clickGesture calls with minimal delay.
+        """
+        try:
+            self._driver.execute_script("mobile: doubleClickGesture", {"x": x, "y": y})
+            self._wait()
+            return ActionResult(success=True, method="doubleClickGesture",
+                                coordinates={"x": x, "y": y})
+        except Exception:
+            pass
+
+        # Two-tap fallback with minimal gap
+        try:
+            self._driver.execute_script("mobile: clickGesture", {"x": x, "y": y})
+            time.sleep(0.08)
+            self._driver.execute_script("mobile: clickGesture", {"x": x, "y": y})
+            self._wait()
+            return ActionResult(success=True, method="double_clickGesture_fallback",
+                                coordinates={"x": x, "y": y})
+        except Exception as e:
+            return ActionResult(success=False, method="double_tap", error=str(e))
+
+    def pinch_zoom(
+        self,
+        center_x: int,
+        center_y: int,
+        scale:    float = 0.5,
+        speed:    int   = 2500,
+    ) -> ActionResult:
+        """
+        Pinch-zoom gesture centered at (center_x, center_y).
+        scale < 1.0 → pinch in (zoom out / map shrink)
+        scale > 1.0 → pinch open (zoom in / map expand)
+        Primary: mobile:pinchCloseGesture / mobile:pinchOpenGesture.
+        Fallback: ADB two-finger swipe via two subprocess calls.
+        """
+        # Define the interaction region (±40% of screen from center)
+        half_w = max(150, int(center_x * 0.4))
+        half_h = max(150, int(center_y * 0.4))
+        left   = max(0, center_x - half_w)
+        top    = max(0, center_y - half_h)
+        width  = half_w * 2
+        height = half_h * 2
+        percent = min(0.95, abs(1.0 - scale) + 0.25)
+
+        gesture = "mobile: pinchCloseGesture" if scale < 1.0 else "mobile: pinchOpenGesture"
+        try:
+            self._driver.execute_script(gesture, {
+                "left":    left,
+                "top":     top,
+                "width":   width,
+                "height":  height,
+                "percent": percent,
+                "speed":   speed,
+            })
+            self._wait()
+            return ActionResult(success=True, method=gesture.split(": ")[1],
+                                coordinates={"cx": center_x, "cy": center_y, "scale": scale})
+        except Exception:
+            pass
+
+        # ADB two-finger simulation fallback
+        try:
+            offset = int(min(half_w, half_h) * 0.6)
+            if scale < 1.0:
+                # Pinch in: fingers move toward center
+                f1_sx, f1_sy = center_x - offset, center_y
+                f1_ex, f1_ey = center_x - offset // 4, center_y
+                f2_sx, f2_sy = center_x + offset, center_y
+                f2_ex, f2_ey = center_x + offset // 4, center_y
+            else:
+                # Pinch open: fingers move away from center
+                f1_sx, f1_sy = center_x - offset // 4, center_y
+                f1_ex, f1_ey = center_x - offset, center_y
+                f2_sx, f2_sy = center_x + offset // 4, center_y
+                f2_ex, f2_ey = center_x + offset, center_y
+
+            dur = 400
+            cmd1 = self._adb_prefix + [
+                "shell", "input", "swipe",
+                str(f1_sx), str(f1_sy), str(f1_ex), str(f1_ey), str(dur),
+            ]
+            cmd2 = self._adb_prefix + [
+                "shell", "input", "swipe",
+                str(f2_sx), str(f2_sy), str(f2_ex), str(f2_ey), str(dur),
+            ]
+            import threading
+            t1 = threading.Thread(target=subprocess.run, args=(cmd1,),
+                                   kwargs={"capture_output": True, "timeout": 5.0})
+            t2 = threading.Thread(target=subprocess.run, args=(cmd2,),
+                                   kwargs={"capture_output": True, "timeout": 5.0})
+            t1.start(); t2.start()
+            t1.join(); t2.join()
+            self._wait()
+            return ActionResult(success=True, method="adb_pinch_fallback",
+                                coordinates={"cx": center_x, "cy": center_y, "scale": scale})
+        except Exception as e:
+            return ActionResult(success=False, method="pinch_zoom", error=str(e))
 
     # -------------------------------------------------------------------------
     # System Actions

@@ -10,5 +10,17 @@
 
   "mode": "oneliner",
   "goal": "Launch Bloons TD6 and go to gameplay",
-  "app_package": "com.netflix.NGP.BloonsTDSix"
+  "app_package": "com.netflix.NGP.BloonsTDSix",
+
+  "gameplay_phase": {
+    "enabled": true,
+    "duration_seconds": 300,
+    "action_interval_seconds": 4,
+    "comment": [
+      "After navigation steps complete and gameplay is confirmed,",
+      "GameplayAgent plays autonomously for duration_seconds.",
+      "Tactic cards from 04_gameplay_tactics.md drive deterministic actions.",
+      "VLM fallback (DecisionAgent) handles unanticipated game states."
+    ]
+  }
 }

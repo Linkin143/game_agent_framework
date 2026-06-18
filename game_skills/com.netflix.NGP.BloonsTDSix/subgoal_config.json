@@ -1,0 +1,95 @@
+{
+  "_comment": [
+    "Per-game subgoal configuration for Bloons TD6.",
+    "Package: com.netflix.NGP.BloonsTDSix",
+    "",
+    "subgoal_order : defines the EXACT sequence the game must pass through.",
+    "  — The last entry is the one that triggers GOAL_ACHIEVED.",
+    "  — The orchestrator advances through this list one step at a time.",
+    "",
+    "subgoal_confirmations : per-subgoal OCR rules.",
+    "  require_any  — at least ONE of these OCR tokens must be visible",
+    "                 for the subgoal to be considered COMPLETE.",
+    "                 Empty list = no OCR requirement (pixel-diff alone).",
+    "  exclude_if   — if ANY of these tokens are visible the subgoal is",
+    "                 NOT yet complete (we are still on a prior screen).",
+    "                 Takes precedence over require_any."
+  ],
+
+  "subgoal_order": [
+    "APP_LAUNCH",
+    "DISMISS_POPUPS",
+    "NAVIGATE_TO_MAIN_MENU",
+    "SELECT_MAP",
+    "SELECT_DIFFICULTY",
+    "SELECT_GAME_MODE",
+    "DISMISS_TUTORIAL",
+    "VERIFY_GAMEPLAY"
+  ],
+
+  "subgoal_confirmations": {
+    "APP_LAUNCH": {
+      "require_any": [],
+      "exclude_if":  []
+    },
+
+    "DISMISS_POPUPS": {
+      "require_any": ["PLAY", "HOME", "SHOP", "MONKEY", "KNOWLEDGE", "NEWS"],
+      "exclude_if":  ["ALLOW", "ACCEPT", "CLAIM", "UPDATE", "RECONNECTING"]
+    },
+
+    "NAVIGATE_TO_MAIN_MENU": {
+      "require_any": ["PLAY", "HOME", "SHOP", "KNOWLEDGE"],
+      "exclude_if":  [
+        "MONKEY MEADOW", "THE LOOP", "DARK CASTLE", "LOGS",
+        "EASY", "MEDIUM", "HARD", "IMPOPPABLE",
+        "STANDARD", "DEFLATION", "APOPALYPSE",
+        "ROUND 1", "LIVES", "CASH"
+      ]
+    },
+
+    "SELECT_MAP": {
+      "require_any": [
+        "MONKEY MEADOW", "THE LOOP", "LOGS", "ISLAND",
+        "DARK CASTLE", "BEGINNER", "ADVANCED", "EXPERT", "ALTERNATE"
+      ],
+      "exclude_if":  [
+        "EASY", "MEDIUM", "HARD", "IMPOPPABLE",
+        "STANDARD", "DEFLATION", "APOPALYPSE",
+        "ROUND 1", "LIVES", "CASH", "PLAY", "HOME", "SHOP"
+      ]
+    },
+
+    "SELECT_DIFFICULTY": {
+      "require_any": ["EASY", "MEDIUM", "HARD", "IMPOPPABLE"],
+      "exclude_if":  [
+        "ROUND 1", "LIVES", "CASH", "UPGRADE", "TOWER",
+        "STANDARD", "DEFLATION", "APOPALYPSE"
+      ]
+    },
+
+    "SELECT_GAME_MODE": {
+      "require_any": ["STANDARD", "DEFLATION", "APOPALYPSE", "REVERSE", "HALF CASH"],
+      "exclude_if":  [
+        "ROUND 1", "LIVES", "CASH", "UPGRADE", "TOWER",
+        "EASY", "MEDIUM", "HARD"
+      ]
+    },
+
+    "DISMISS_TUTORIAL": {
+      "require_any": ["OK", "GOT IT", "CONTINUE", "NEXT", "DONE", "CLOSE"],
+      "exclude_if":  ["ROUND 1", "LIVES", "CASH", "UPGRADE"]
+    },
+
+    "VERIFY_GAMEPLAY": {
+      "require_any": ["ROUND", "LIVES", "CASH"],
+      "exclude_if":  [
+        "EASY", "MEDIUM", "HARD", "IMPOPPABLE",
+        "SELECT", "DIFFICULTY", "STANDARD", "DEFLATION",
+        "MAP", "BEGINNER", "ADVANCED", "EXPERT",
+        "MONKEY MEADOW", "THE LOOP", "DARK CASTLE", "LOGS",
+        "HERO", "HOME", "SHOP", "KNOWLEDGE"
+      ]
+    }
+  }
+}

@@ -1,14 +1,12 @@
 {
   "comment": [
     "Bloons TD6 — STEPS MODE goal file.",
-    "Works with BOTH run_game.py AND run_yolo_game.py.",
     "",
-    "STEPS MODE: you author each NLP step; the agent executes",
-    "  OBSERVE → ANALYZE → PLAN → EXECUTE → VERIFY for each step.",
-    "  Change 'mode' to 'oneliner' to let the AI decompose the goal itself.",
+    "STEPS MODE: navigate to gameplay step-by-step.",
+    "GAMEPLAY PHASE: after reaching gameplay, the GameplayAgent runs for",
+    "  duration_seconds using tactic cards + VLM fallback.",
     "",
-    "run_game.py       → Appium + Claude Vision (standard apps + games)",
-    "run_yolo_game.py  → YOLO + Scrcpy + ADB  (Unity/Unreal canvas games)"
+    "run_game.py → Appium + Claude Vision"
   ],
 
   "mode": "steps",
@@ -18,18 +16,25 @@
   "steps": [
     "Launch Bloons TD6 and wait for it to fully open past any loading screens",
     "Dismiss any splash screen, promotional popup, or update notification",
+    "Tap the START button on the Welcome menu to reach the Main Menu screen",
     "Tap the PLAY button on the main menu to reach the map selection screen",
     "Select the first available map (Monkey Meadow or any unlocked map)",
     "Select EASY difficulty",
     "Select STANDARD game mode",
     "Dismiss any tutorial overlay or tip dialog that appears",
-    "Verify the gameplay canvas is active: round counter and lives are visible on screen",
-    "Scroll the tower sidebar upward to reveal additional tower types",
-    "Drag a Dart Monkey tower from the sidebar to a valid position on the map",
-    "Tap the PLAY or START ROUND button to begin Round 1",
-    "Tap the speed button to activate 2x fast-forward speed",
-    "Verify bloons are moving along the track and the round counter is incrementing",
-    "If a defeat screen appears, tap the RESTART button to try again",
-    "Dismiss any system notifications or OS-level permission dialogs that appear"
-  ]
+    "Tap the green triangle button placed at bottom left corner",
+    "Verify the gameplay is active with UPGRADes menu"
+  ],
+
+  "gameplay_phase": {
+    "enabled": true,
+    "duration_seconds": 300,
+    "action_interval_seconds": 4,
+    "comment": [
+      "After navigation steps complete and gameplay is confirmed,",
+      "GameplayAgent plays autonomously for duration_seconds.",
+      "Tactic cards from 04_gameplay_tactics.md drive deterministic actions.",
+      "VLM fallback (DecisionAgent) handles unanticipated game states."
+    ]
+  }
 }
