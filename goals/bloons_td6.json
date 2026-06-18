@@ -1,31 +1,35 @@
 {
-  "comment": "Goal file for Bloons TD6 — place your goal here",
-
-  "mode": "oneliner",
-  "goal": "Launch Bloons TD6 and go to gameplay",
-  "app_package": "com.ninjakiwi.bloonstd6",
-
-  "notes": [
-    "In 'oneliner' mode, the AI agents decompose the goal automatically.",
-    "Subgoals are auto-generated: APP_LAUNCH → MAIN_MENU → LEVEL_SELECT → START_GAMEPLAY → VERIFY_GAMEPLAY",
-    "You only need to write ONE sentence. The agents do everything else.",
-    "Switch to 'steps' mode below if you want to override specific navigation steps."
+  "comment": [
+    "Bloons TD6 — STEPS MODE goal file.",
+    "Works with BOTH run_game.py AND run_yolo_game.py.",
+    "",
+    "STEPS MODE: you author each NLP step; the agent executes",
+    "  OBSERVE → ANALYZE → PLAN → EXECUTE → VERIFY for each step.",
+    "  Change 'mode' to 'oneliner' to let the AI decompose the goal itself.",
+    "",
+    "run_game.py       → Appium + Claude Vision (standard apps + games)",
+    "run_yolo_game.py  → YOLO + Scrcpy + ADB  (Unity/Unreal canvas games)"
   ],
 
-  "steps_mode_example": {
-    "comment": "Change 'mode' to 'steps' above to use this instead",
-    "mode": "steps",
-    "goal": "Launch Bloons TD6 and go to gameplay",
-    "app_package": "com.ninjakiwi.bloonstd6",
-    "steps": [
-      "Launch and open Bloons TD6",
-      "Dismiss any splash screen or loading screen",
-      "Tap the PLAY button on the main menu",
-      "Select any available map (tap the first map tile)",
-      "Select EASY difficulty",
-      "Select STANDARD game mode",
-      "Dismiss any tutorial or tip overlay",
-      "Verify gameplay is active: bloons visible on track, round counter showing"
-    ]
-  }
+  "mode": "steps",
+  "goal": "Bloons TD6 full gameplay test — launch, place a tower, and survive Round 1",
+  "app_package": "com.netflix.NGP.BloonsTDSix",
+
+  "steps": [
+    "Launch Bloons TD6 and wait for it to fully open past any loading screens",
+    "Dismiss any splash screen, promotional popup, or update notification",
+    "Tap the PLAY button on the main menu to reach the map selection screen",
+    "Select the first available map (Monkey Meadow or any unlocked map)",
+    "Select EASY difficulty",
+    "Select STANDARD game mode",
+    "Dismiss any tutorial overlay or tip dialog that appears",
+    "Verify the gameplay canvas is active: round counter and lives are visible on screen",
+    "Scroll the tower sidebar upward to reveal additional tower types",
+    "Drag a Dart Monkey tower from the sidebar to a valid position on the map",
+    "Tap the PLAY or START ROUND button to begin Round 1",
+    "Tap the speed button to activate 2x fast-forward speed",
+    "Verify bloons are moving along the track and the round counter is incrementing",
+    "If a defeat screen appears, tap the RESTART button to try again",
+    "Dismiss any system notifications or OS-level permission dialogs that appear"
+  ]
 }

@@ -1,34 +1,37 @@
-# ============================================================
-# game_agent_framework — Dependencies
-# Install: pip install -r requirements.txt
-# ============================================================
+# =============================================================================
+# Android Game Agent Framework — Requirements
+# =============================================================================
 
-# ── Appium ──────────────────────────────────────────────────
-Appium-Python-Client>=3.1.0
-
-# ── LangChain + LangGraph ───────────────────────────────────
+# ── LangChain / LangGraph ──────────────────────────────────────────────────
 langchain>=0.2.0
 langchain-core>=0.2.0
 langchain-anthropic>=0.1.15
-langgraph>=0.1.14
-anthropic>=0.27.0
+langgraph>=0.1.0
 
-# ── Computer Vision ─────────────────────────────────────────
+# ── Computer Vision ────────────────────────────────────────────────────────
 opencv-python>=4.9.0.80
 numpy>=1.26.0
 
-# ── OCR ─────────────────────────────────────────────────────
-easyocr>=1.7.1          # Primary OCR backend
-# pytesseract>=0.3.10   # Alternative: pip install pytesseract (requires Tesseract binary)
+# ── YOLOv11 (Ultralytics) ──────────────────────────────────────────────────
+ultralytics>=8.2.0
 
-# ── Image Hashing (Memory Agent replay buffer) ──────────────
-imagehash>=4.3.1
-Pillow>=10.0.0
+# ── ONNX Runtime (CPU + optional GPU) ─────────────────────────────────────
+onnxruntime>=1.18.0
+# onnxruntime-gpu>=1.18.0   # Uncomment for NVIDIA GPU support
 
-# ── HTML/XML Parsing ────────────────────────────────────────
-beautifulsoup4>=4.12.0
-lxml>=5.1.0
+# ── OCR ───────────────────────────────────────────────────────────────────
+easyocr>=1.7.1
 
-# ── Environment & Utilities ─────────────────────────────────
-python-dotenv>=1.0.0
-typing-extensions>=4.9.0
+# ── Data Validation (Pydantic v2) ─────────────────────────────────────────
+pydantic>=2.6.0
+
+# ── Async / Typing ────────────────────────────────────────────────────────
+typing-extensions>=4.11.0
+
+# ── HTTP / Utilities ──────────────────────────────────────────────────────
+requests>=2.31.0
+pillow>=10.3.0
+
+# ── Optional: PyTorch for GPU YOLO ────────────────────────────────────────
+# torch>=2.3.0
+# torchvision>=0.18.0

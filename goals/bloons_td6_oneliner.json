@@ -1,0 +1,14 @@
+{
+  "comment": [
+    "Bloons TD6 — ONE-LINER GOAL MODE.",
+    "The AI autonomously decomposes the goal and decides every action.",
+    "No steps required — just describe what you want in plain English.",
+    "",
+    "Use this when you want maximum AI autonomy.",
+    "Use goals/bloons_td6.json (steps mode) when you want precise control."
+  ],
+
+  "mode": "oneliner",
+  "goal": "Launch Bloons TD6 and go to gameplay",
+  "app_package": "com.netflix.NGP.BloonsTDSix"
+}

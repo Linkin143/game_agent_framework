@@ -1,31 +1,42 @@
 {
-  "comment": "TEMPLATE — Copy this file and fill in your game details",
+  "comment": [
+    "TEMPLATE — copy this file and rename it for your game.",
+    "Works with BOTH run_game.py AND run_yolo_game.py.",
+    "",
+    "MODE OPTIONS:",
+    "  'oneliner' → AI decomposes the goal autonomously (fastest to set up)",
+    "  'steps'    → You author each NLP step for precise control",
+    "",
+    "FINDING YOUR PACKAGE NAME:",
+    "  adb shell pm list packages | grep <yourgame>",
+    "  Example: adb shell pm list packages | grep supercell"
+  ],
 
   "mode": "oneliner",
+  "goal": "Launch <YourGame> and go to gameplay",
+  "app_package": "com.developer.yourgame",
 
-  "goal": "Launch [YOUR GAME NAME] and go to gameplay",
+  "steps_example_only_used_when_mode_is_steps": [
+    "Launch <YourGame> and wait for the loading screen to finish",
+    "Dismiss any splash screen, notification, or promotional popup",
+    "Tap the PLAY or START button on the main menu",
+    "Select the first available level or mode",
+    "Confirm any difficulty or mode selection dialog",
+    "Verify the game canvas is active and gameplay has started",
+    "Perform the first in-game action (tap, swipe, or drag as required)",
+    "Verify the action succeeded (score changed, element moved, etc.)",
+    "If a game-over or defeat screen appears, tap RESTART or RETRY",
+    "Dismiss any OS-level permission or system notification dialogs"
+  ],
 
-  "app_package": "com.example.yourgame",
-
-  "notes": [
-    "OPTION 1 — One-liner mode (recommended for most games):",
-    "  Just write ONE sentence in 'goal'. The AI figures out everything.",
-    "  Example: 'Launch Bloons TD6 and go to gameplay'",
-    "  Example: 'Play Clash of Clans'",
-    "  Example: 'Open Candy Crush and start a level'",
-    "",
-    "OPTION 2 — Steps mode (use when you want precise control):",
-    "  Change 'mode' to 'steps' and add a 'steps' array.",
-    "  Each step is a plain English sentence.",
-    "  The AI reads each step and executes it on the live screen.",
-    "",
-    "OPTION 3 — Command line (quickest):",
-    "  python run_game.py \"Launch [GameName] and go to gameplay\"",
-    "  python run_game.py \"Play Bloons TD6\" --package com.ninjakiwi.bloonstd6",
-    "",
-    "HOW GOALS ARE PROCESSED:",
-    "  oneliner → AI auto-decomposes into 5 subgoals",
-    "  steps    → AI executes each step sequentially on the live screen",
-    "  Both modes use the same SENSE→TEST→ACT→VERIFY loop for every action"
+  "how_to_use": [
+    "1. Copy this file:  cp goals/any_game_template.json goals/mygame.json",
+    "2. Set 'goal'       → plain-English objective",
+    "3. Set 'app_package'→ Android package name",
+    "4. Set 'mode'       → 'oneliner' or 'steps'",
+    "5. If steps mode, rename 'steps_example_only_...' key to 'steps' and edit",
+    "6. Run:",
+    "     python run_yolo_game.py --file goals/mygame.json   # YOLO (Unity games)",
+    "     python run_game.py      --file goals/mygame.json   # Appium (standard apps)"
   ]
 }

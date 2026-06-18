@@ -1,0 +1,97 @@
+{
+  "session_id": "yolo_1781732957",
+  "goal": "Launch Bloons TD6 and go to gameplay",
+  "strategy": "",
+  "start_time": 1781732957.8014274,
+  "entries": [
+    {
+      "ts": 1781732981.5213726,
+      "fid": 1,
+      "action": "launch_app",
+      "detail": "The screen is completely black with no detections, no XML elements, and no visib",
+      "outcome": "success",
+      "reward": 1.0,
+      "notes": ""
+    },
+    {
+      "ts": 1781732993.268572,
+      "fid": 3,
+      "action": "wait",
+      "detail": "The game is currently in a loading/initialization sequence showing 'Step 6 of 10",
+      "outcome": "success",
+      "reward": 1.0,
+      "notes": ""
+    },
+    {
+      "ts": 1781733003.3352253,
+      "fid": 5,
+      "action": "tap",
+      "detail": "The game is showing the welcome/splash screen with the Bloons TD6 logo. This is ",
+      "outcome": "success",
+      "reward": 1.0,
+      "notes": ""
+    },
+    {
+      "ts": 1781733013.0267515,
+      "fid": 7,
+      "action": "tap",
+      "detail": "The game is on the welcome/splash screen showing 'Welcome to Bloons TD6' with a ",
+      "outcome": "success",
+      "reward": 1.0,
+      "notes": ""
+    },
+    {
+      "ts": 1781733022.5090222,
+      "fid": 9,
+      "action": "tap",
+      "detail": "The game is on the welcome/splash screen showing 'Welcome to Bloons TD6' with a ",
+      "outcome": "partial",
+      "reward": 0.0,
+      "notes": ""
+    },
+    {
+      "ts": 1781733032.2029579,
+      "fid": 11,
+      "action": "tap",
+      "detail": "The game is on the welcome/splash screen showing 'Welcome to Bloons TD6' with a ",
+      "outcome": "partial",
+      "reward": 0.0,
+      "notes": ""
+    },
+    {
+      "ts": 1781733041.9257226,
+      "fid": 13,
+      "action": "tap",
+      "detail": "The game is on the welcome/title screen showing 'Welcome To Bloons TD6' with a S",
+      "outcome": "partial",
+      "reward": 0.0,
+      "notes": ""
+    },
+    {
+      "ts": 1781733051.5146728,
+      "fid": 15,
+      "action": "tap",
+      "detail": "The game is on the welcome/splash screen showing 'Welcome to Bloons TD6' with a ",
+      "outcome": "partial",
+      "reward": 0.0,
+      "notes": ""
+    }
+  ],
+  "action_stats": {
+    "launch_app": {
+      "success": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "wait": {
+      "success": 1,
+      "failed": 0,
+      "total": 1
+    },
+    "tap": {
+      "success": 2,
+      "failed": 0,
+      "total": 6
+    }
+  }
+}
