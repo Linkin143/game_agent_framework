@@ -22,8 +22,8 @@
     "Select EASY difficulty",
     "Select STANDARD game mode",
     "Dismiss any tutorial overlay or tip dialog that appears",
-    "Tap the green triangle button placed at bottom left corner",
-    "Verify the gameplay is active with UPGRADes menu"
+    "Tap the white triangle button placed at bottom left corner",
+    "Verify the gameplay is active"
   ],
 
   "gameplay_phase": {
@@ -32,9 +32,7 @@
     "action_interval_seconds": 4,
     "comment": [
       "After navigation steps complete and gameplay is confirmed,",
-      "GameplayAgent plays autonomously for duration_seconds.",
-      "Tactic cards from 04_gameplay_tactics.md drive deterministic actions.",
-      "VLM fallback (DecisionAgent) handles unanticipated game states."
+      "GameplayAgent plays autonomously for duration_seconds."
     ]
   }
 }

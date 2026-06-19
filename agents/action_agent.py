@@ -1,7 +1,28 @@
 # agents/action_agent.py
 # =============================================================================
-# Action Agent — 3-Tier Deterministic Repair Executor
+# Action Agent — VLM-First 3-Tier Repair Executor
 # ACT phase: Execute the DecisionPlan using 3-tier progressive repair.
+#
+# DESIGN PRINCIPLE — All coordinates come from the VLM:
+# ──────────────────────────────────────────────────────
+# Every coordinate that reaches the device hardware originates from the VLM's
+# DecisionPlan (plan.locators, plan.fallback_bounds, plan.type_payload) or
+# from a targeted VLM re-ask call made when all plan coordinates are exhausted.
+#
+# Removed intentionally:
+#   • Tier 2c (auto-template scan) — OpenCV picked coords without VLM visual
+#     confirmation; coordinates came from filename keyword matching, not from
+#     the VLM seeing where the element actually is on the live screen.
+#   • Screen-center last resort — tapping (screen_w/2, screen_h/2) blindly is
+#     actively harmful on game canvases (Unity/Unreal) where it may accidentally
+#     select a tower, open an upgrade panel, or do nothing useful.
+#   • Drag-end +400 nudge — silently dragged to a wrong location when VLM
+#     provided no drop target.
+#
+# Instead, when all VLM-provided coordinates are exhausted:
+#   → Make one targeted VLM re-ask (fresh screenshot + target description)
+#   → If VLM still cannot locate the element → return success=False
+#   → Caller (GameplayAgent / orchestrator) re-senses on the next tick
 # =============================================================================
 
 from __future__ import annotations
@@ -21,7 +42,7 @@ from core.image_analyzer import ImageAnalyzer
 class ActionReport:
     """Result of the 3-tier action execution."""
     success:      bool
-    tier_used:    int                 # 1, 2, or 3
+    tier_used:    int                 # 0=system, 1=semantic, 2=ocr/template, 3=coords/reask
     method:       str
     coordinates:  Optional[dict]
     action_type:  str
@@ -31,16 +52,21 @@ class ActionReport:
 
 class ActionAgent(BaseAgent):
     """
-    Executes actions through a 3-tier repair matrix.
+    Executes VLM DecisionPlans through a 3-tier repair matrix.
 
     TIER 1: Semantic element targeting (acc_id, res_id, text, UiAutomator)
-    TIER 2: OCR coordinates + OpenCV template matching + fuzzy text
-    TIER 3: Raw hardware coordinate tap (never fails to execute)
+            → uses VLM's plan.locators (non-coordinate types)
 
-    The optional `game_skill` string is passed from GameSkillLoader and
-    contains game-specific action hints (e.g. exact sidebar coords for
-    Bloons TD6 tower placement).  It is logged per-action so the ActionAgent
-    can consult it when falling back to Tier 3 coordinate overrides.
+    TIER 2: OCR coordinates + named OpenCV template + fuzzy text
+            → uses VLM's plan.locators[ocr_center], plan.template_name,
+              plan.target_description
+
+    TIER 3: VLM-provided bounding box / coords → VLM re-ask (fresh screenshot)
+            → uses plan.fallback_bounds, plan.locators[coords]
+            → if all empty: targeted VLM re-ask for coordinates
+            → if re-ask fails: return success=False (caller retries next tick)
+
+    All coordinates that reach the device originate from VLM decisions.
     """
 
     SKILL_FILE = "03_action_skill.md"
@@ -57,21 +83,24 @@ class ActionAgent(BaseAgent):
         self._analyzer   = image_analyzer
         self._game_skill = game_skill
         if game_skill:
-            print(f"[action_agent] Game-specific skill available "
-                  f"({len(game_skill)} chars) — Tier 3 coords may reference game HUD layout")
+            print(f"[action_agent] Game-specific skill loaded ({len(game_skill)} chars)")
+
+    # =========================================================================
+    # Public — act()
+    # =========================================================================
 
     def act(
         self,
         plan:       DecisionPlan,
         perception: PerceptionState,
     ) -> ActionReport:
-        """Execute the DecisionPlan through the 3-tier repair matrix."""
+        """Execute the DecisionPlan through the 3-tier VLM-driven repair matrix."""
         at  = (plan.action_type or "tap").lower().strip()
         log = []
         print(f"[action_agent] ACT: {at} → '{plan.target_description[:60]}' "
               f"(conf={plan.confidence:.2f})")
 
-        # ── System actions: bypass element repair tiers ───────────────────
+        # ── System actions: no element repair needed ──────────────────────
         if at in ("activate_app", "launch_app"):
             pkg = plan.locators[0]["value"] if plan.locators else ""
             r = self._executor.activate_app(pkg)
@@ -92,6 +121,18 @@ class ActionAgent(BaseAgent):
             return ActionReport(success=True, tier_used=0, method=f"wait({dur}s)",
                                 coordinates=None, action_type=at)
 
+        # ── Verify / Confirm ─────────────────────────────────────────────
+        # VLM chose to visually verify the current screen state — no hardware
+        # action is needed.  Return success=True so VerificationAgent knows
+        # the VLM examined the screen and confirmed the stated condition.
+        # VerificationAgent._verify_step() checks action_type=="verify" first
+        # and accepts this as proof — no OCR token matching required.
+        if at in ("verify", "confirm", "assert", "check_state", "check"):
+            print(f"[action_agent] VLM visual verify: "
+                  f"'{plan.target_description[:60]}' conf={plan.confidence:.2f}")
+            return ActionReport(success=True, tier_used=0, method="vlm_verify",
+                                coordinates=None, action_type=at)
+
         if at in ("swipe", "scroll"):
             direction = plan.target_description.lower()
             for d in ["up", "down", "left", "right"]:
@@ -99,16 +140,25 @@ class ActionAgent(BaseAgent):
                     r = self._executor.swipe(d, perception.screen_w, perception.screen_h)
                     return ActionReport(success=r.success, tier_used=0, method=f"swipe_{d}",
                                         coordinates=None, action_type=at)
-            r = self._executor.swipe("up", perception.screen_w, perception.screen_h)
-            return ActionReport(success=r.success, tier_used=0, method="swipe_up",
-                                coordinates=None, action_type=at)
+            # Direction not found in VLM's description — log and fail cleanly
+            log.append("swipe: no direction found in VLM target_description")
+            print(f"[action_agent] swipe: cannot determine direction from "
+                  f"'{plan.target_description[:40]}' — returning failure")
+            return ActionReport(success=False, tier_used=0, method="swipe_no_direction",
+                                coordinates=None, action_type=at, attempt_logs=log,
+                                error="No direction in VLM target_description")
 
         # ── Long Press / Hold ─────────────────────────────────────────────
         # action_type: "long_press" | "hold" | "hold_press"
         # locators   : position (ocr_center or coords)
         # type_payload: duration in ms (default 1000)
         if at in ("long_press", "hold", "hold_press"):
-            cx, cy = self._extract_primary_coords(plan, perception)
+            cx, cy = self._extract_primary_coords(plan)
+            if cx == 0 and cy == 0:
+                log.append("long_press: no VLM coordinates — returning failure")
+                return ActionReport(success=False, tier_used=0, method="long_press_no_coords",
+                                    coordinates=None, action_type=at, attempt_logs=log,
+                                    error="VLM provided no coordinates for long_press")
             try:
                 dur_ms = int(float(plan.type_payload or "1000"))
             except ValueError:
@@ -122,7 +172,12 @@ class ActionAgent(BaseAgent):
         # action_type: "double_tap" | "doubletap" | "double_click"
         # locators   : position (ocr_center or coords)
         if at in ("double_tap", "doubletap", "double_click"):
-            cx, cy = self._extract_primary_coords(plan, perception)
+            cx, cy = self._extract_primary_coords(plan)
+            if cx == 0 and cy == 0:
+                log.append("double_tap: no VLM coordinates — returning failure")
+                return ActionReport(success=False, tier_used=0, method="double_tap_no_coords",
+                                    coordinates=None, action_type=at, attempt_logs=log,
+                                    error="VLM provided no coordinates for double_tap")
             r = self._executor.double_tap_at(cx, cy)
             log.append(f"DOUBLE_TAP ({cx},{cy}) → {'OK' if r.success else r.error}")
             return ActionReport(success=r.success, tier_used=2, method=r.method,
@@ -130,20 +185,39 @@ class ActionAgent(BaseAgent):
 
         # ── Drag and Drop ─────────────────────────────────────────────────
         # action_type: "drag" | "drag_and_drop" | "drag_drop" | "tower_place" | "place"
-        # start coords: from locators (ocr_center/coords) — the element to grab
-        # end coords  : from type_payload "endX,endY" OR fallback_bounds center
         #
-        # Bloons TD6 example:
-        #   action_type: "drag_and_drop"
-        #   locators: [{"type": "ocr_center", "value": "1015,420"}]  ← tower icon
-        #   type_payload: "400,800"                                   ← map drop zone
+        # Convention (from gameplay guide + VLM):
+        #   locators    → [{"type": "ocr_center", "value": "X,Y"}]  ← DRAG START (tower icon)
+        #   type_payload → "endX,endY"                               ← DRAG END (drop target)
+        #   fallback_bounds → {"cx": endX, "cy": endY}              ← backup drop target
+        #
+        # All coordinates must come from VLM's plan.
+        # If VLM provided no end coordinates → return failure (VLM re-ask via next tick).
         if at in ("drag", "drag_and_drop", "drag_drop", "tower_place", "place"):
-            start_x, start_y = self._extract_primary_coords(plan, perception)
-            end_x, end_y = self._extract_end_coords(plan, perception, start_x, start_y)
-            try:
-                dur_ms = int(float(plan.type_payload.split(",")[0])) if plan.type_payload and not "," in plan.type_payload else 1200
-            except ValueError:
-                dur_ms = 1200
+            start_x, start_y = self._extract_primary_coords(plan)
+            end_x, end_y     = self._extract_end_coords(plan, start_x, start_y)
+
+            # Guard: no valid start coordinates
+            if start_x == 0 and start_y == 0:
+                log.append("drag_and_drop: no VLM start coordinates — aborted")
+                print("[action_agent] drag_and_drop aborted: no start coords from VLM")
+                return ActionReport(success=False, tier_used=0, method="drag_aborted_no_start",
+                                    coordinates=None, action_type=at, attempt_logs=log,
+                                    error="VLM provided no drag start coordinates")
+
+            # Guard: no valid end coordinates (0,0 sentinel from _extract_end_coords)
+            if end_x == 0 and end_y == 0:
+                log.append("drag_and_drop: no VLM end coordinates — aborted")
+                print("[action_agent] drag_and_drop aborted: no end coords from VLM "
+                      f"(type_payload='{plan.type_payload}' "
+                      f"fallback_bounds={plan.fallback_bounds})")
+                return ActionReport(success=False, tier_used=0, method="drag_aborted_no_end",
+                                    coordinates=None, action_type=at, attempt_logs=log,
+                                    error="VLM provided no drag end coordinates. "
+                                          "Set type_payload='endX,endY' in the action plan.")
+
+            # Fixed duration — always 1200ms for reliable drag gestures
+            dur_ms = 1200
             print(f"[action_agent] DRAG ({start_x},{start_y}) → ({end_x},{end_y}) dur={dur_ms}ms")
             r = self._executor.drag_and_drop(start_x, start_y, end_x, end_y, duration_ms=dur_ms)
             log.append(f"DRAG ({start_x},{start_y})→({end_x},{end_y}) → {'OK' if r.success else r.error}")
@@ -152,11 +226,7 @@ class ActionAgent(BaseAgent):
 
         # ── Swipe with explicit coordinates ───────────────────────────────
         # action_type: "swipe_coords" | "swipe_to" | "scroll_to" | "fling"
-        # type_payload: "startX,startY,endX,endY"
-        #
-        # Bloons TD6 sidebar scroll example:
-        #   action_type: "swipe_coords"
-        #   type_payload: "1015,1800,1015,400"   ← scroll sidebar up
+        # type_payload: "startX,startY,endX,endY"  ← all 4 from VLM
         if at in ("swipe_coords", "swipe_to", "scroll_to", "fling"):
             parts = [p.strip() for p in (plan.type_payload or "").split(",")]
             if len(parts) >= 4:
@@ -168,22 +238,23 @@ class ActionAgent(BaseAgent):
                                         coordinates=r.coordinates, action_type=at, attempt_logs=log)
                 except ValueError:
                     pass
-            # Fallback: directional swipe from target description
+            # Fallback: directional swipe from VLM's target_description
             direction = plan.target_description.lower()
             for d in ["up", "down", "left", "right"]:
                 if d in direction:
                     r = self._executor.swipe(d, perception.screen_w, perception.screen_h)
                     return ActionReport(success=r.success, tier_used=2, method=f"swipe_{d}_fallback",
                                         coordinates=None, action_type=at, attempt_logs=log)
-            r = self._executor.swipe("up", perception.screen_w, perception.screen_h)
-            return ActionReport(success=r.success, tier_used=2, method="swipe_fallback",
-                                coordinates=None, action_type=at, attempt_logs=log)
+            # VLM gave neither valid type_payload nor direction — fail cleanly
+            log.append("swipe_coords: no valid coords in type_payload and no direction in description")
+            return ActionReport(success=False, tier_used=0, method="swipe_coords_no_data",
+                                coordinates=None, action_type=at, attempt_logs=log,
+                                error="VLM provided no valid swipe coordinates")
 
         # ── Pinch / Zoom ──────────────────────────────────────────────────
         # action_type: "pinch" | "pinch_zoom" | "zoom" | "zoom_in" | "zoom_out"
-        # type_payload: scale factor  (0.5 = zoom out 50%, 2.0 = zoom in 200%)
-        #               If not provided: zoom_in → 2.0, zoom_out/pinch → 0.5
-        # fallback_bounds: zoom center (optional; defaults to screen center)
+        # type_payload: scale factor (0.5 = zoom out, 2.0 = zoom in)
+        # fallback_bounds: zoom center (optional)
         if at in ("pinch", "pinch_zoom", "zoom", "zoom_in", "zoom_out"):
             fb = plan.fallback_bounds
             cx = (fb.get("cx") or perception.screen_w // 2) if fb else perception.screen_w // 2
@@ -198,7 +269,7 @@ class ActionAgent(BaseAgent):
             return ActionReport(success=r.success, tier_used=2, method=r.method,
                                 coordinates=r.coordinates, action_type=at, attempt_logs=log)
 
-        # ── TIER 1: Semantic element locators ─────────────────────────────
+        # ── TIER 1: Semantic element locators (VLM-provided) ─────────────
         log.append("── TIER 1: Semantic Element Locators ──")
         tried = set()
         for loc in plan.locators:
@@ -215,10 +286,23 @@ class ActionAgent(BaseAgent):
 
         log.append("T1 exhausted → TIER 2")
 
-        # ── TIER 2: OCR coords + template matching + fuzzy ────────────────
-        log.append("── TIER 2: OCR Coords + Template + Fuzzy ──")
+        # ── TIER 2: OCR coords + named template + fuzzy text ─────────────
+        log.append("── TIER 2: OCR Coords + Named Template + Fuzzy ──")
 
-        # 2a: OCR center coordinates
+        # 2a: OCR center coordinates from VLM's locators
+        #
+        # ── OFFSET FIX: ocr_center = text label center ≠ element visual center ──
+        # EasyOCR returns the bounding box of the TEXT (e.g., "Monkey Meadow" label
+        # at the bottom of a map thumbnail). For image thumbnails and icon tiles,
+        # the text label sits 40-80px BELOW the actual visual element center.
+        # Tapping the OCR label center lands on the label row, not the tile image.
+        #
+        # Rule:
+        #   • fallback_bounds height > 50px AND width > 50px
+        #     → element is an image thumbnail / large icon
+        #     → use fallback_bounds cx/cy (covers full element) NOT raw ocr text center
+        #   • fallback_bounds absent or tiny (text-only button like "PLAY")
+        #     → use ocr_center as-is (correct for pure text buttons)
         for loc in plan.locators:
             lt = (loc.get("type") or "").lower()
             lv = (loc.get("value") or "").strip()
@@ -226,9 +310,33 @@ class ActionAgent(BaseAgent):
                 parts = [p.strip() for p in lv.split(",")]
                 if len(parts) >= 2:
                     try:
-                        cx, cy = int(parts[0]), int(parts[1])
+                        ocr_cx, ocr_cy = int(parts[0]), int(parts[1])
+
+                        # Check if fallback_bounds covers a large visual element
+                        fb   = plan.fallback_bounds
+                        cx, cy = ocr_cx, ocr_cy   # default: use raw OCR position
+                        if fb:
+                            fb_w = (fb.get("x2", 0) or 0) - (fb.get("x1", 0) or 0)
+                            fb_h = (fb.get("y2", 0) or 0) - (fb.get("y1", 0) or 0)
+                            if fb_w > 50 and fb_h > 50:
+                                # Large element: bounds center is the visual tile center
+                                cx = int(fb.get("cx") or (fb.get("x1", 0) + fb_w // 2))
+                                cy = int(fb.get("cy") or (fb.get("y1", 0) + fb_h // 2))
+                                log.append(
+                                    f"T2 [ocr_center→bounds_center] "
+                                    f"element {fb_w}×{fb_h}px → bounds center ({cx},{cy}) "
+                                    f"overrides OCR label ({ocr_cx},{ocr_cy})"
+                                )
+                            else:
+                                log.append(
+                                    f"T2 [ocr_center] text-only element "
+                                    f"({fb_w}×{fb_h}px) → using OCR label ({cx},{cy})"
+                                )
+                        else:
+                            log.append(f"T2 [ocr_center] no fallback_bounds → using ({cx},{cy})")
+
                         r = self._executor.tap_at(cx, cy)
-                        log.append(f"T2 [ocr_center] ({cx},{cy}) → {'OK' if r.success else r.error}")
+                        log.append(f"T2 [ocr_center] tap ({cx},{cy}) → {'OK' if r.success else r.error}")
                         if r.success:
                             return ActionReport(success=True, tier_used=2, method="ocr_center",
                                                 coordinates={"x": cx, "y": cy}, action_type=at,
@@ -236,33 +344,15 @@ class ActionAgent(BaseAgent):
                     except ValueError:
                         pass
 
-        # 2b: OpenCV template matching
-        if plan.template_name and perception.screenshot_np is not None:
-            match = self._analyzer.find_template(perception.screenshot_np, plan.template_name)
-            if match.found:
-                cx, cy = match.bbox["cx"], match.bbox["cy"]
-                r = self._executor.tap_at(cx, cy)
-                log.append(f"T2 [template:{plan.template_name}] conf={match.confidence:.2f} "
-                            f"({cx},{cy}) → {'OK' if r.success else r.error}")
-                if r.success:
-                    return ActionReport(success=True, tier_used=2, method=f"template:{plan.template_name}",
-                                        coordinates={"x": cx, "y": cy}, action_type=at, attempt_logs=log)
+        # NOTE: Tier 2b (named OpenCV template matching from reference_assets/) removed.
+        # Template PNG comparison against the live screen is not used — the VLM
+        # identifies element positions visually from the annotated screenshot at
+        # runtime instead.  reference_assets/ folder is kept for future use.
+        #
+        # NOTE: Auto-template scan (2c) was also removed previously for the same reason.
+        # Proceed directly from OCR coords (2a) → fuzzy text (2d) → Tier 3.
 
-        # 2c: Try all templates automatically
-        if perception.screenshot_np is not None:
-            for tmatch in self._analyzer.find_all_templates(perception.screenshot_np):
-                kw = plan.target_description.lower()
-                if any(k in tmatch.template_name.lower() for k in kw.split()[:3]):
-                    cx, cy = tmatch.bbox["cx"], tmatch.bbox["cy"]
-                    r = self._executor.tap_at(cx, cy)
-                    log.append(f"T2 [auto_template:{tmatch.template_name}] ({cx},{cy}) → OK")
-                    if r.success:
-                        return ActionReport(success=True, tier_used=2,
-                                            method=f"auto_template:{tmatch.template_name}",
-                                            coordinates={"x": cx, "y": cy}, action_type=at,
-                                            attempt_logs=log)
-
-        # 2d: Fuzzy text/desc match via UiAutomator
+        # 2d: Fuzzy UiAutomator text match — from VLM's target_description
         hint = plan.target_description.split()[0][:20] if plan.target_description else ""
         if hint:
             r = self._executor.tap_text_contains(hint)
@@ -273,15 +363,19 @@ class ActionAgent(BaseAgent):
 
         log.append("T2 exhausted → TIER 3")
 
-        # ── TIER 3: Raw hardware coordinate tap ───────────────────────────
-        log.append("── TIER 3: Hardware Coordinate Override ──")
+        # ── TIER 3: VLM-provided bounding box coordinates ─────────────────
+        # Uses plan.fallback_bounds and plan.locators[coords] — both from VLM.
+        # If all VLM-provided coordinates are empty: targeted VLM re-ask.
+        # Screen-center fallback removed — blindly harmful on game canvases.
+        log.append("── TIER 3: VLM-Provided Coords + VLM Re-Ask ──")
 
         coord_sources = []
         fb = plan.fallback_bounds
         if fb:
             cx = fb.get("cx") or (fb.get("x1", 0) + (fb.get("x2", 0) - fb.get("x1", 0)) // 2)
             cy = fb.get("cy") or (fb.get("y1", 0) + (fb.get("y2", 0) - fb.get("y1", 0)) // 2)
-            coord_sources.append((cx, cy, "fallback_bounds"))
+            if cx and cy:
+                coord_sources.append((int(cx), int(cy), "fallback_bounds"))
 
         for loc in plan.locators:
             lt = (loc.get("type") or "").lower()
@@ -294,9 +388,6 @@ class ActionAgent(BaseAgent):
                     except ValueError:
                         pass
 
-        # Screen center as last resort
-        coord_sources.append((perception.screen_w // 2, perception.screen_h // 2, "screen_center"))
-
         tried_coords: set = set()
         for cx, cy, label in coord_sources:
             if (cx, cy) in tried_coords or cx <= 0 or cy <= 0:
@@ -306,17 +397,134 @@ class ActionAgent(BaseAgent):
             log.append(f"T3 [{label}] ({cx},{cy}) → {'OK' if r.success else r.error}")
             if r.success:
                 return ActionReport(success=True, tier_used=3, method=f"T3:{label}",
-                                    coordinates={"x": cx, "y": cy}, action_type=at, attempt_logs=log)
+                                    coordinates={"x": cx, "y": cy}, action_type=at,
+                                    attempt_logs=log)
 
-        # This should NEVER happen — tap_at always executes
-        log.append("T3 coordinate tap failed (unexpected)")
-        return ActionReport(success=False, tier_used=3, method="all_failed",
-                            coordinates=None, action_type=at, attempt_logs=log,
-                            error="All 3 tiers exhausted")
+        # ── T3 LAST RESORT: VLM Re-Ask for Coordinates ────────────────────
+        # All VLM-provided coordinates from the original plan are exhausted.
+        # Make ONE targeted VLM call with a fresh screenshot asking specifically
+        # for the pixel coordinates of the target element.
+        #
+        # This is more expensive (extra API call) but fully VLM-driven and
+        # handles edge cases where the VLM omitted coordinates in its first plan.
+        #
+        # If VLM re-ask also fails → return success=False so the caller
+        # (GameplayAgent / orchestrator) re-senses on the next tick.
+        log.append("T3: VLM-provided coords exhausted → VLM coordinate re-ask")
+        print(f"[action_agent] T3: No usable coords in plan — VLM re-ask for "
+              f"'{plan.target_description[:50]}'")
 
-    # -------------------------------------------------------------------------
+        reask_coords = self._vlm_reask_coordinates(perception, plan)
+        if reask_coords:
+            rx, ry = reask_coords
+            r = self._executor.tap_at(rx, ry)
+            log.append(f"T3 [vlm_reask] ({rx},{ry}) → {'OK' if r.success else r.error}")
+            if r.success:
+                return ActionReport(success=True, tier_used=3, method="T3:vlm_reask",
+                                    coordinates={"x": rx, "y": ry}, action_type=at,
+                                    attempt_logs=log)
+
+        # All tiers + VLM re-ask exhausted.
+        # Return failure — caller will re-sense + re-ask VLM on the next tick.
+        log.append("T3 VLM re-ask failed — returning success=False for caller to retry")
+        print(f"[action_agent] ⚠ All tiers + VLM re-ask exhausted for: "
+              f"'{plan.target_description[:50]}'")
+        return ActionReport(
+            success=     False,
+            tier_used=   3,
+            method=      "all_tiers_exhausted",
+            coordinates= None,
+            action_type= at,
+            attempt_logs=log,
+            error=(
+                "All 3 tiers + VLM re-ask exhausted. "
+                "Caller should re-sense and re-plan on the next tick."
+            ),
+        )
+
+    # =========================================================================
+    # Private: VLM Re-Ask for Coordinates
+    # =========================================================================
+
+    def _vlm_reask_coordinates(
+        self,
+        perception: PerceptionState,
+        plan:       DecisionPlan,
+    ) -> Optional[tuple[int, int]]:
+        """
+        Targeted VLM re-ask: send a fresh screenshot asking for the pixel
+        center of the target element by description.
+
+        Called only when all 3 tiers exhausted their VLM-provided coordinates.
+
+        Returns (x, y) if VLM can locate the element, or None if:
+          • Element not visible on current screen
+          • VLM API call fails
+          • VLM returns (0, 0)
+
+        Prompt is intentionally lightweight — asks ONLY for coordinates,
+        not a full DecisionPlan. This keeps the extra call fast and cheap.
+        """
+        screenshot_b64 = perception.annotated_b64 or perception.screenshot_b64
+        if not screenshot_b64:
+            print("[action_agent] VLM re-ask: no screenshot available — skipping")
+            return None
+
+        prompt = (
+            f"COORDINATE LOOKUP — TARGETED RE-ASK\n"
+            f"{'─'*50}\n"
+            f"A previous action attempt exhausted all locator strategies.\n"
+            f"I need the exact pixel center of this element:\n\n"
+            f"  TARGET  : {plan.target_description}\n"
+            f"  CONTEXT : {plan.reasoning[:200]}\n"
+            f"  SCREEN  : {perception.screen_w}×{perception.screen_h} px\n\n"
+            f"Instructions:\n"
+            f"  1. Look at the screenshot carefully\n"
+            f"  2. Find the element described above (button, icon, or UI widget)\n"
+            f"  3. Return its pixel center coordinates\n\n"
+            f"Return ONLY raw JSON (no markdown, no extra text):\n"
+            f'  {{"x": <integer>, "y": <integer>, "found": true, '
+            f'"reason": "<brief description of where you found it>"}}\n\n'
+            f"If the element is NOT visible on the screen, return:\n"
+            f'  {{"x": 0, "y": 0, "found": false, "reason": "<why not visible>"}}'
+        )
+
+        lean_prompt = (
+            f"TARGET: {plan.target_description[:80]}\n"
+            f"SCREEN: {perception.screen_w}×{perception.screen_h}\n"
+            f"Return JSON only: {{\"x\": int, \"y\": int, \"found\": bool, \"reason\": str}}"
+        )
+
+        content = self.build_image_message(screenshot_b64, prompt)
+        result  = self.call_llm(user_content=content, lean_content=lean_prompt)
+
+        if result.get("llm_failed"):
+            print(f"[action_agent] VLM re-ask: LLM call failed — {result.get('error','?')}")
+            return None
+
+        if not result.get("found", False):
+            print(f"[action_agent] VLM re-ask: element not found — "
+                  f"{result.get('reason','no reason given')[:60]}")
+            return None
+
+        try:
+            x = int(result.get("x", 0))
+            y = int(result.get("y", 0))
+        except (TypeError, ValueError):
+            print(f"[action_agent] VLM re-ask: invalid coordinates in response: {result}")
+            return None
+
+        if x > 0 and y > 0:
+            print(f"[action_agent] VLM re-ask: ✅ found at ({x},{y}) — "
+                  f"{result.get('reason','')[:60]}")
+            return (x, y)
+
+        print("[action_agent] VLM re-ask: returned (0,0) — element not found on screen")
+        return None
+
+    # =========================================================================
     # Private: Locator Router
-    # -------------------------------------------------------------------------
+    # =========================================================================
 
     def _try_locator(self, lt: str, lv: str) -> ActionResult:
         if lt == "accessibility_id":
@@ -331,19 +539,22 @@ class ActionAgent(BaseAgent):
             return self._executor.tap_by_uiautomator(lv)
         return ActionResult(success=False, method=lt, error=f"Unknown locator type: {lt}")
 
-    # -------------------------------------------------------------------------
+    # =========================================================================
     # Private: Coordinate Extraction Helpers
-    # -------------------------------------------------------------------------
+    # =========================================================================
 
     @staticmethod
-    def _extract_primary_coords(
-        plan:       DecisionPlan,
-        perception: PerceptionState,
-    ) -> tuple[int, int]:
+    def _extract_primary_coords(plan: DecisionPlan) -> tuple[int, int]:
         """
-        Extract primary (start / target) coordinates from plan.
-        Priority: ocr_center locator → coords locator → fallback_bounds center → screen center.
-        Used by long_press, double_tap, and drag_and_drop (start position).
+        Extract primary (start / target) coordinates from the VLM's plan.
+
+        Priority order:
+          1. locators[type=ocr_center]  — VLM gave pixel center from OCR
+          2. locators[type=coords]      — VLM gave raw pixel coordinates
+          3. fallback_bounds center     — VLM gave bounding box
+
+        Returns (0, 0) if VLM provided no usable coordinates.
+        Callers MUST guard against (0, 0) before executing hardware actions.
         """
         for loc in plan.locators:
             lt = (loc.get("type") or "").lower()
@@ -363,23 +574,30 @@ class ActionAgent(BaseAgent):
             if cx and cy:
                 return int(cx), int(cy)
 
-        return perception.screen_w // 2, perception.screen_h // 2
+        # VLM provided no coordinates — return (0,0) sentinel
+        return 0, 0
 
     @staticmethod
     def _extract_end_coords(
-        plan:       DecisionPlan,
-        perception: PerceptionState,
-        default_x:  int,
-        default_y:  int,
+        plan:      DecisionPlan,
+        default_x: int,
+        default_y: int,
     ) -> tuple[int, int]:
         """
         Extract end (drop target) coordinates for drag_and_drop.
-        Priority: type_payload "endX,endY" → fallback_bounds center (if different from start).
 
-        Convention: VLM sets type_payload="endX,endY" for drag target,
-        and locators contain the START element (tower icon, slider handle, etc.)
+        Convention: VLM sets type_payload="endX,endY" for drag end point.
+        If type_payload is empty, fallback_bounds is used as the drop target
+        (only when meaningfully different from start position).
+
+        Returns (0, 0) if VLM provided no valid end coordinates.
+        Callers MUST guard against (0, 0) before executing drag actions.
+
+        NOTE: The old '+400 nudge' fallback has been removed — it silently
+        produced wrong drags when VLM gave no target. Now we fail cleanly
+        and let the caller retry on the next tick with fresh VLM guidance.
         """
-        # type_payload = "endX,endY"
+        # type_payload = "endX,endY"  (as specified in gameplay guide)
         if plan.type_payload:
             parts = [p.strip() for p in plan.type_payload.split(",")]
             if len(parts) >= 2:
@@ -398,5 +616,5 @@ class ActionAgent(BaseAgent):
             if cx and cy and (abs(int(cx) - default_x) > 20 or abs(int(cy) - default_y) > 20):
                 return int(cx), int(cy)
 
-        # Nudge default downward as last resort (prevents zero-distance drag)
-        return default_x, min(default_y + 400, perception.screen_h - 50)
+        # VLM provided no valid drag end coordinates — return (0,0) sentinel
+        return 0, 0

@@ -272,21 +272,38 @@ class VerificationAgent(BaseAgent):
 
         evidence.append(f"is_verify_step={is_verify_step} is_last_step={is_last_step}")
 
-        # ── Verify-type step: require OCR evidence ───────────────────────
+        # ── Verify-type step: trust VLM verdict first, OCR as fallback ───
         if is_verify_step:
-            keywords = self._extract_step_keywords(step_text)
-            found    = [kw for kw in keywords if kw in post_text]
-            evidence.append(f"verify_kws_found={found}")
-            if found:
+            # PRIORITY 1: Trust VLM's explicit visual verify verdict.
+            # If ActionAgent handled the step as action_type="verify" and
+            # reported success=True, the VLM has already visually confirmed
+            # the state — no OCR token matching needed.
+            vlm_verified = (
+                action_report.action_type in ("verify", "confirm", "assert", "check_state", "check")
+                and action_report.success
+            )
+            if vlm_verified:
                 step_complete = True
-                reason = f"Step '{step_text[:50]}' confirmed via OCR: {found}"
-            else:
-                # Not confirmed yet — wait one more iteration
-                return VerificationResult(
-                    verdict="ACTION_SUCCESS", subgoal_complete=False, goal_achieved=False,
-                    pixel_diff_score=diff, evidence=evidence, next_subgoal=step_text,
-                    reasoning=f"Verify step: waiting for OCR tokens {keywords[:5]}",
+                reason = (
+                    f"VLM visually confirmed step: '{step_text[:50]}' "
+                    f"(action_type={action_report.action_type}, success=True)"
                 )
+            else:
+                # PRIORITY 2: Fallback — OCR token matching (useful for steps like
+                # "Verify PLAY button visible" where a specific label appears on screen)
+                keywords = self._extract_step_keywords(step_text)
+                found    = [kw for kw in keywords if kw in post_text]
+                evidence.append(f"verify_kws_found={found}")
+                if found:
+                    step_complete = True
+                    reason = f"Step '{step_text[:50]}' confirmed via OCR: {found}"
+                else:
+                    # Not confirmed yet — wait one more iteration
+                    return VerificationResult(
+                        verdict="ACTION_SUCCESS", subgoal_complete=False, goal_achieved=False,
+                        pixel_diff_score=diff, evidence=evidence, next_subgoal=step_text,
+                        reasoning=f"Verify step: waiting for OCR tokens {keywords[:5]}",
+                    )
         else:
             # Action step: complete when action succeeded + screen changed
             screen_changed = (
@@ -399,7 +416,7 @@ class VerificationAgent(BaseAgent):
         generic_hud = [
             "ROUND", "LIVES", "CASH", "SCORE", "HEALTH", "HP", "COINS",
             "TIME", "WAVE", "BLOONS", "TOWER", "GOLD", "MANA", "ENERGY",
-            "UPGRADE", "TACK", "SHOOTER", "MONKEY", "DART", "SNIPER",
+            "UPGRADes", "TACK", "SHOOTER", "MONKEY", "DART", "SNIPER",
             "PAUSE", "SKIP INTRO", "MULTIPLIER", "KEYS",
         ]
         config_require: list[str] = []

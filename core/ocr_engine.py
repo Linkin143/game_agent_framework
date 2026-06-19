@@ -1,18 +1,23 @@
 # core/ocr_engine.py
 # =============================================================================
 # OCR Text Extraction Engine
-# Uses EasyOCR (primary) or Tesseract (fallback) to extract all visible text
-# from the game/app screenshot — including canvas-rendered text that the
-# Android accessibility tree CANNOT see.
+# Uses PaddleOCR (primary), EasyOCR (fallback), or Tesseract (last resort)
+# to extract all visible text from the game/app screenshot — including
+# canvas-rendered text that the Android accessibility tree CANNOT see.
+#
+# Backend priority:
+#   1. PaddleOCR  — fastest + most accurate for game UIs (CPU-only, no GPU needed)
+#   2. EasyOCR    — good accuracy, larger memory footprint
+#   3. Tesseract  — lightest, lowest accuracy for stylized game fonts
 # =============================================================================
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional
-
 import cv2
 import numpy as np
 
@@ -38,8 +43,8 @@ class OCRResult:
 class OCREngine:
     """
     Multi-backend OCR engine.
-    Tries EasyOCR first (better accuracy for game UIs).
-    Falls back to OpenCV-based simple text region detection if EasyOCR not installed.
+    Tries PaddleOCR first (fastest + most accurate for game UIs, CPU-only).
+    Falls back to EasyOCR, then pytesseract if earlier backends are unavailable.
     """
 
     CONFIDENCE_THRESHOLD = 0.45   # Minimum confidence to include a word
@@ -57,7 +62,26 @@ class OCREngine:
         self._init_backend()
 
     def _init_backend(self) -> None:
-        """Initialize OCR backend — try EasyOCR first, then Tesseract."""
+        """Initialize OCR backend — try PaddleOCR first, then EasyOCR, then Tesseract."""
+        # ── Tier 1: PaddleOCR (primary) ──────────────────────────────────────
+        # PaddleOCR has changed its __init__ kwargs across versions:
+        #   ≥ 2.8  : device='cpu', no show_log, no use_gpu
+        #   2.7.x  : device='cpu', show_log=False, no use_gpu
+        #   < 2.7  : use_gpu=False, show_log=False, no device
+        # We try each candidate set in order and stop on the first success.
+        try:
+            from paddleocr import PaddleOCR  # type: ignore
+            lang = self._languages[0] if self._languages else "en"
+            self._reader = PaddleOCR(lang=lang)
+            self._backend = "paddleocr"
+            print("[ocr_engine] Backend: PaddleOCR [OK]")
+            return
+        except ImportError:
+            print("[ocr_engine] PaddleOCR not installed — trying EasyOCR")
+        except Exception as exc:
+            print(f"[ocr_engine] PaddleOCR init failed ({exc}) — trying EasyOCR")
+
+        # ── Tier 2: EasyOCR (first fallback) ─────────────────────────────────
         try:
             import easyocr  # type: ignore
             self._reader  = easyocr.Reader(
@@ -66,17 +90,22 @@ class OCREngine:
                 verbose=False,
             )
             self._backend = "easyocr"
-            print("[ocr_engine] Backend: EasyOCR ✓")
+            print("[ocr_engine] Backend: EasyOCR [OK]")
+            return
         except ImportError:
             print("[ocr_engine] EasyOCR not installed — trying pytesseract")
-            try:
-                import pytesseract  # type: ignore
-                self._reader  = pytesseract
-                self._backend = "tesseract"
-                print("[ocr_engine] Backend: Tesseract ✓")
-            except ImportError:
-                print("[ocr_engine] WARNING: No OCR backend available. Install: pip install easyocr")
-                self._backend = "none"
+
+        # ── Tier 3: Tesseract (last resort) ──────────────────────────────────
+        try:
+            import pytesseract  # type: ignore
+            self._reader  = pytesseract
+            self._backend = "tesseract"
+            print("[ocr_engine] Backend: Tesseract [OK]")
+        except ImportError:
+            print("[ocr_engine] WARNING: No OCR backend available.")
+            print("[ocr_engine] Install primary:  pip install paddleocr paddlepaddle")
+            print("[ocr_engine] Install fallback: pip install easyocr")
+            self._backend = "none"
 
     def extract(self, image_np: np.ndarray) -> OCRResult:
         """
@@ -84,7 +113,9 @@ class OCREngine:
         Returns an OCRResult with per-word confidence and bounding boxes.
         """
         t0 = time.time()
-        if self._backend == "easyocr":
+        if self._backend == "paddleocr":
+            words = self._extract_paddleocr(image_np)
+        elif self._backend == "easyocr":
             words = self._extract_easyocr(image_np)
         elif self._backend == "tesseract":
             words = self._extract_tesseract(image_np)
@@ -145,6 +176,68 @@ class OCREngine:
             if found:
                 return found
         return None
+
+    # -------------------------------------------------------------------------
+    # Private: PaddleOCR Backend
+    # -------------------------------------------------------------------------
+
+    def _extract_paddleocr(self, image_np: np.ndarray) -> list[OCRWord]:
+        """
+        PaddleOCR 3.x implementation.
+        Uses predict() API and converts output into OCRWord objects.
+        """
+        try:
+            result = self._reader.predict(image_np)
+
+            words: list[OCRWord] = []
+
+            for page in result:
+
+                texts = page.get("rec_texts", [])
+                scores = page.get("rec_scores", [])
+                polys = page.get("rec_polys", [])
+
+                for text, score, poly in zip(texts, scores, polys):
+
+                    try:
+                        poly_np = np.array(poly)
+
+                        if poly_np.ndim != 2 or poly_np.shape[1] != 2:
+                            continue
+
+                        xs = poly_np[:, 0].astype(int)
+                        ys = poly_np[:, 1].astype(int)
+
+                        x1 = int(xs.min())
+                        y1 = int(ys.min())
+                        x2 = int(xs.max())
+                        y2 = int(ys.max())
+
+                        cx = (x1 + x2) // 2
+                        cy = (y1 + y2) // 2
+
+                        text_clean = str(text).strip()
+
+                        if not text_clean:
+                            continue
+
+                        words.append(
+                            OCRWord(
+                                text=text_clean,
+                                confidence=float(score),
+                                bbox=[x1, y1, x2, y2],
+                                center=[cx, cy],
+                            )
+                        )
+
+                    except Exception:
+                        continue
+
+            return words
+
+        except Exception as exc:
+            print(f"[ocr_engine] PaddleOCR error: {exc}")
+            return []
 
     # -------------------------------------------------------------------------
     # Private: EasyOCR Backend

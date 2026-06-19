@@ -113,32 +113,55 @@ class DecisionAgent(BaseAgent):
             perception, current_subgoal, goal, stuck_count, heuristic_hint
         )
 
-        # Engine-specific skill context
-        extra_system = ""
-        eng = perception.rendering_engine
-        if eng in ("UNITY", "CANVAS"):
-            extra_system = f"\n\n## Engine-Specific Context\n{self._unity_skill[:1200]}"
-        elif eng == "UNREAL":
-            extra_system = f"\n\n## Engine-Specific Context\n{self._ue5_skill[:1200]}"
-        extra_system += f"\n\n## Game Navigation Reference\n{self._nav_skill[:800]}"
+        # ── Phase-Aware Skill Injection ───────────────────────────────────────
+        # NAVIGATION PHASE (launch → gameplay): inject NOTHING.
+        #   VLM navigates by VISION only — annotated screenshot + pixel grid
+        #   + OCR + XML accessibility tree.
+        #
+        # WHY: Injecting navigation .md text causes text-instruction bias:
+        #   • VLM reads "tap Monkey Meadow" → uses ocr_center (text label center)
+        #     instead of visually locating the image tile center.
+        #   • 8000+ chars of mixed nav+gameplay text triggers hallucination.
+        #   • Multiple .md files with conflicting coordinate rules cause the VLM
+        #     to pick a wrong compromise instead of trusting the screenshot.
+        #
+        # GAMEPLAY PHASE (ACTIVE_GAMEPLAY / VERIFY_GAMEPLAY): inject gameplay
+        #   tactics only. Navigation text is still excluded even in this phase.
+        #   The game_skill loaded via load_gameplay_skill() contains only
+        #   02_mechanics + 03_guide — no 01_navigation files.
+        # ─────────────────────────────────────────────────────────────────────
+        _GAMEPLAY_SUBGOALS = {
+            "ACTIVE_GAMEPLAY", "VERIFY_GAMEPLAY",
+            "START_GAMEPLAY",  "VERIFY_PLAYBACK",
+        }
+        is_gameplay_phase = (
+            current_subgoal.upper().strip() in _GAMEPLAY_SUBGOALS
+            or "ACTIVE_GAMEPLAY" in current_subgoal.upper()
+        )
 
-        # ── GAME-SPECIFIC SKILL: Injected ONLY for the launched game's package ──
-        # This provides precise gameplay instructions (HUD layout, button coords,
-        # OCR keywords, navigation flow) specific to the current game.
-        # It is loaded once at startup by GameSkillLoader and NEVER mixed with
-        # skills from other games.
-        if self._game_skill:
+        extra_system = ""   # default: NOTHING injected during navigation
+
+        if is_gameplay_phase and self._game_skill:
+            # Gameplay phase only: inject engine hint + game-specific tactics
+            eng = perception.rendering_engine
+            if eng in ("UNITY", "CANVAS"):
+                extra_system = f"\n\n## Engine Context\n{self._unity_skill[:600]}"
+            elif eng == "UNREAL":
+                extra_system = f"\n\n## Engine Context\n{self._ue5_skill[:600]}"
             extra_system += (
                 f"\n\n{'═'*60}\n"
-                f"## GAME-SPECIFIC GAMEPLAY INSTRUCTIONS (HIGH PRIORITY)\n"
-                f"The following instructions are specific to THIS game's package.\n"
-                f"They override generic navigation rules when there is a conflict.\n"
-                f"Use the HUD keywords, coordinates, and navigation sequence below\n"
-                f"to make precise decisions for the current subgoal.\n"
+                f"## IN-GAME TACTICS (HIGH PRIORITY — active gameplay only)\n"
+                f"These instructions apply while you are INSIDE the game.\n"
                 f"{'═'*60}\n"
-                f"{self._game_skill[:3000]}\n"
+                f"{self._game_skill[:2000]}\n"
                 f"{'═'*60}\n"
             )
+            print(f"[decision_agent] GAMEPLAY phase — injecting game skill "
+                  f"({min(len(self._game_skill), 2000)} chars)")
+        elif self._game_skill:
+            # Navigation phase: skill text withheld — VLM navigates by vision
+            print(f"[decision_agent] NAVIGATION phase — game skill withheld "
+                  f"(VLM navigates by screenshot vision only)")
 
         # Step 3: LLM call — receives screenshot + XML + OCR + hint
         result = self.call_llm(
@@ -380,8 +403,15 @@ class DecisionAgent(BaseAgent):
             f"YOUR TASK — Cross-reference screenshot + XML + OCR then decide:\n"
             f"  1. If XML has a visible [TAP] element → use accessibility_id or text locator\n"
             f"  2. If game canvas (no XML) → use pixel coordinates from the screenshot grid\n"
-            f"  3. Always set fallback_bounds from the screenshot bounding box\n"
-            f"  4. Confidence ≥ 0.85 to act; if unsure set confidence=0.5\n\n"
+            f"  3. fallback_bounds MUST cover the FULL visual element (image area + label).\n"
+            f"     Set cx/cy to the CENTER of the IMAGE/ICON area, NOT the text label below it.\n"
+            f"     Example: a map thumbnail is 200×140px image + 20px text label beneath.\n"
+            f"     → fallback_bounds: x1/y1=top-left of tile, x2/y2=bottom of label\n"
+            f"     → cx/cy: center of the IMAGE portion (approx y1 + 70px), NOT label center\n"
+            f"  4. ocr_center locator: ONLY use for pure text buttons (e.g. 'PLAY', 'EASY').\n"
+            f"     Do NOT set ocr_center for image thumbnails, map tiles, or icon buttons\n"
+            f"     that have a text label nearby — use fallback_bounds cx/cy instead.\n"
+            f"  5. Confidence ≥ 0.85 to act; if unsure set confidence=0.5\n\n"
             f"Return ONLY raw JSON — no markdown, no explanation."
         )
 

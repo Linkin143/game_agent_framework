@@ -1,37 +1,49 @@
 # =============================================================================
-# Android Game Agent Framework — Requirements
+
+# Android Game Agent Framework
+
+# Modern Stack (Python 3.13 Compatible)
+
 # =============================================================================
 
-# ── LangChain / LangGraph ──────────────────────────────────────────────────
-langchain>=0.2.0
-langchain-core>=0.2.0
-langchain-anthropic>=0.1.15
-langgraph>=0.1.0
+# ── LangGraph / Anthropic ──────────────────────────────────────────────────
+
+langchain-core==1.4.7
+langchain-anthropic==1.4.6
+
+langgraph==1.2.5
+langgraph-sdk==0.4.2
+langgraph-prebuilt==1.1.0
 
 # ── Computer Vision ────────────────────────────────────────────────────────
-opencv-python>=4.9.0.80
-numpy>=1.26.0
 
-# ── YOLOv11 (Ultralytics) ──────────────────────────────────────────────────
-ultralytics>=8.2.0
+opencv-python>=4.10.0
+numpy>=2.0.0
 
-# ── ONNX Runtime (CPU + optional GPU) ─────────────────────────────────────
-onnxruntime>=1.18.0
-# onnxruntime-gpu>=1.18.0   # Uncomment for NVIDIA GPU support
+# ── OCR ────────────────────────────────────────────────────────────────────
 
-# ── OCR ───────────────────────────────────────────────────────────────────
-easyocr>=1.7.1
+paddleocr==3.7.0
+paddlepaddle==3.2.0
+paddlex==3.7.1
 
-# ── Data Validation (Pydantic v2) ─────────────────────────────────────────
-pydantic>=2.6.0
+# Optional OCR fallback
 
-# ── Async / Typing ────────────────────────────────────────────────────────
-typing-extensions>=4.11.0
+easyocr>=1.7.2
 
-# ── HTTP / Utilities ──────────────────────────────────────────────────────
-requests>=2.31.0
-pillow>=10.3.0
+# ── Validation ─────────────────────────────────────────────────────────────
 
-# ── Optional: PyTorch for GPU YOLO ────────────────────────────────────────
-# torch>=2.3.0
-# torchvision>=0.18.0
+pydantic>=2.10.0
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+
+typing-extensions>=4.12.0
+requests>=2.32.0
+pillow>=11.0.0
+
+# ── Runtime ────────────────────────────────────────────────────────────────
+
+onnxruntime>=1.22.0
+
+# ── Optional YOLO ──────────────────────────────────────────────────────────
+
+ultralytics>=8.3.0

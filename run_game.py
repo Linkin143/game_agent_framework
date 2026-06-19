@@ -101,7 +101,10 @@ def build_framework(driver, app_package: str = "") -> dict:
     # GameSkillLoader.load_subgoal_config → per-game subgoal order + rules
     # Both are loaded once here and threaded into the relevant agents.
     # If no skill / config exists, agents degrade gracefully to generic logic.
-    game_skill     = GameSkillLoader.load(app_package)
+    # load_gameplay_skill() skips 01_navigation*.md files — navigation is
+    # handled by VLM vision alone.  This prevents text-instruction bias where
+    # the LLM pattern-matches nav script text instead of reading the screenshot.
+    game_skill     = GameSkillLoader.load_gameplay_skill(app_package)
     subgoal_config = GameSkillLoader.load_subgoal_config(app_package)
     skill_info     = GameSkillLoader.get_info(app_package)
     print(f"[run_game] Game skill: found={skill_info['skill_found']} "
@@ -149,16 +152,15 @@ def build_framework(driver, app_package: str = "") -> dict:
     )
 
     # ── Gameplay Agent (post-navigation autonomous loop) ─────────────────
-    # Loads tactic cards from *tactics*.md files in the game skill folder.
-    # If no tactics file exists, GameplayAgent falls back to VLM-only mode.
-    tactics_text = GameSkillLoader.load_tactics(app_package)
+    # Pure VLM-driven: no tactic cards, no hardcoded coordinates.
+    # The game_skill text (03_gameplay_guide.md) is already embedded inside
+    # DecisionAgent — every da.decide() call during gameplay automatically
+    # receives the full strategic guide for the current game.
     gameplay_agent = GameplayAgent(
         perception_agent= perception_agent,
         decision_agent=   decision_agent,
         action_agent=     action_agent,
-        executor=         executor,
         game_skill=       game_skill,
-        tactics_text=     tactics_text,
     )
 
     return {
@@ -300,8 +302,8 @@ USAGE EXAMPLES:
             print(f"\n✅ SUCCESS: Navigation + Gameplay complete in {elapsed_total:.1f}s")
             print(f"   Nav iterations:  {final_state.get('iteration', 0)}")
             print(f"   Gameplay ticks:  {gp_summary.get('ticks', 0)}")
-            print(f"   Tactic actions:  {gp_summary.get('tactic_actions', 0)}")
-            print(f"   VLM actions:     {gp_summary.get('vlm_actions', 0)}")
+            print(f"   VLM actions:     {gp_summary.get('total_actions', 0)}")
+            print(f"   Gameplay time:   {gp_summary.get('duration_s', 0):.1f}s")
         else:
             elapsed_total = nav_elapsed
             print(f"\n✅ SUCCESS: Goal achieved in {elapsed_total:.1f}s (no gameplay phase)")

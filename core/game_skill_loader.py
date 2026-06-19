@@ -8,7 +8,7 @@
 #     <app_package>/            ← folder name MUST match Android package ID
 #       01_navigation.md        ← how to navigate from launch → gameplay
 #       02_gameplay_mechanics.md← game rules, HUD keywords, tower/unit names
-#       03_hud_reference.md     ← exact coordinates, button labels, OCR hints
+#       03_gameplay_guide.md    ← VLM gameplay guide: strategy, visuals, decisions
 #       subgoal_config.json     ← per-game subgoal order + confirm/exclude rules
 #       ...                     ← any additional .md files in sort order
 #
@@ -51,11 +51,37 @@ class GameSkillLoader:
     @classmethod
     def load(cls, app_package: str) -> str:
         """
-        Load and return all game skill .md files for `app_package`,
-        concatenated in filename sort order.
+        Load ALL game skill .md files for `app_package`, concatenated in
+        filename sort order (including navigation files).
+
+        Prefer `load_gameplay_skill()` for agent injection — it skips
+        navigation files and prevents LLM text-instruction bias.
 
         Returns "" if no skill folder exists for this package.
         """
+        return cls._load_md_files(app_package, skip_navigation=False)
+
+    @classmethod
+    def load_gameplay_skill(cls, app_package: str) -> str:
+        """
+        Load ONLY in-gameplay strategy .md files for `app_package`.
+
+        Skips any file whose name starts with "01_navigation" — navigation
+        from launch → gameplay is handled by the generic VLM framework using
+        the annotated screenshot + pixel grid + OCR + XML accessibility tree.
+
+        Injecting navigation scripts into the LLM context causes text-instruction
+        bias: the VLM pattern-matches the text ("tap Monkey Meadow") and uses
+        ocr_center of the text label instead of visually locating the image center
+        in the screenshot.  Removing nav text forces the VLM to rely on vision.
+
+        Returns "" if no skill folder or no non-navigation .md files exist.
+        """
+        return cls._load_md_files(app_package, skip_navigation=True)
+
+    @classmethod
+    def _load_md_files(cls, app_package: str, skip_navigation: bool) -> str:
+        """Internal helper: load .md files with optional navigation filtering."""
         if not app_package:
             return ""
 
@@ -65,9 +91,20 @@ class GameSkillLoader:
             print(f"[game_skill_loader] Expected path: {GAME_SKILLS_DIR / app_package}/")
             return ""
 
-        md_files = sorted(skill_dir.glob("*.md"))
+        all_md = sorted(skill_dir.glob("*.md"))
+        if skip_navigation:
+            md_files = [
+                f for f in all_md
+                if not f.stem.lower().startswith("01_navigation")
+            ]
+            skipped = [f.name for f in all_md if f not in md_files]
+            if skipped:
+                print(f"[game_skill_loader] Skipped navigation files: {skipped}")
+        else:
+            md_files = all_md
+
         if not md_files:
-            print(f"[game_skill_loader] Skill folder exists but contains no .md files: {skill_dir}")
+            print(f"[game_skill_loader] No .md files to load for: {app_package}")
             return ""
 
         parts: list[str] = []
@@ -77,10 +114,11 @@ class GameSkillLoader:
                 parts.append(f"### [{md.stem}]\n{content}")
 
         combined = "\n\n---\n\n".join(parts)
-        total_chars = len(combined)
+        mode = "gameplay-only" if skip_navigation else "all"
         print(
-            f"[game_skill_loader] ✅ Loaded game skill for '{app_package}' "
-            f"— {len(md_files)} files, {total_chars} chars"
+            f"[game_skill_loader] ✅ Loaded {mode} skill for '{app_package}' "
+            f"— {len(md_files)} files [{', '.join(f.name for f in md_files)}], "
+            f"{len(combined)} chars"
         )
         return combined
 
@@ -145,46 +183,6 @@ class GameSkillLoader:
             "skill_files":      [f.name for f in files],
             "subgoal_config":   has_config,
         }
-
-    @classmethod
-    def load_tactics(cls, app_package: str) -> str:
-        """
-        Load raw tactic-card markdown text from all ``*tactics*.md`` files
-        in the game skill folder for ``app_package``.
-
-        Returns a single concatenated string (blank lines between files) ready
-        to be passed to ``GameplayAgent.parse_tactics()``.
-        Returns "" if no tactics files exist — GameplayAgent degrades to
-        VLM-only mode gracefully.
-        """
-        if not app_package:
-            return ""
-
-        skill_dir = cls._find_skill_dir(app_package)
-        if skill_dir is None:
-            return ""
-
-        # Match any .md file whose name contains "tactics" (case-insensitive)
-        tactic_files = sorted(
-            f for f in skill_dir.glob("*.md")
-            if "tactic" in f.name.lower()
-        )
-        if not tactic_files:
-            print(f"[game_skill_loader] No tactics .md found for: {app_package}")
-            return ""
-
-        parts: list[str] = []
-        for md in tactic_files:
-            content = md.read_text(encoding="utf-8").strip()
-            if content:
-                parts.append(content)
-
-        combined = "\n\n".join(parts)
-        print(
-            f"[game_skill_loader] ✅ Loaded tactics for '{app_package}' "
-            f"— {len(tactic_files)} file(s), {len(combined)} chars"
-        )
-        return combined
 
     @classmethod
     def list_available(cls) -> list[str]:
