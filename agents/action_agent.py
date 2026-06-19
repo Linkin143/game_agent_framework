@@ -113,13 +113,23 @@ class ActionAgent(BaseAgent):
                                 coordinates=None, action_type=at)
 
         if at in ("wait", "sleep", "pause"):
+            # Dynamic duration: VLM extracts from step text (e.g. "wait for 40 seconds")
+            # or from OCR loading detection (default 3.0s).
+            # type_payload is a plain string number set by the decision agent.
             try:
                 dur = float(plan.type_payload or "2.0")
             except ValueError:
                 dur = 2.0
+            # Clamp to safe bounds: 0.5 s minimum, 120 s maximum
+            dur = max(0.5, min(dur, 120.0))
+            reason = plan.target_description or plan.reasoning or "loading/wait"
+            print(f"[action_agent] ⏳ WAIT {dur}s — {reason[:80]}")
             self._executor.wait(dur)
-            return ActionReport(success=True, tier_used=0, method=f"wait({dur}s)",
-                                coordinates=None, action_type=at)
+            return ActionReport(
+                success=True, tier_used=0, method=f"wait({dur}s)",
+                coordinates=None, action_type=at,
+                attempt_logs=[f"Waited {dur}s — {reason[:80]}"],
+            )
 
         # ── Verify / Confirm ─────────────────────────────────────────────
         # VLM chose to visually verify the current screen state — no hardware
@@ -344,13 +354,48 @@ class ActionAgent(BaseAgent):
                     except ValueError:
                         pass
 
-        # NOTE: Tier 2b (named OpenCV template matching from reference_assets/) removed.
-        # Template PNG comparison against the live screen is not used — the VLM
-        # identifies element positions visually from the annotated screenshot at
-        # runtime instead.  reference_assets/ folder is kept for future use.
-        #
-        # NOTE: Auto-template scan (2c) was also removed previously for the same reason.
-        # Proceed directly from OCR coords (2a) → fuzzy text (2d) → Tier 3.
+        # ── Tier 2b: Card Bounds Sanity Check + VLM Card Re-Query ────────────
+        # Cards are IMAGE ARTWORK (large) + TEXT LABEL (small) stacked vertically.
+        # Tier 2a may have tapped the text label center (40-80px below image center).
+        # If the VLM flagged element_type='card', OR target description contains
+        # card-like keywords, AND the fallback_bounds height is suspiciously small
+        # (< 60px = text-only bounding box), fire a targeted VLM re-query that
+        # explicitly asks for the IMAGE CENTER, not the label center.
+        _CARD_KEYWORDS = {
+            "map", "level", "tile", "card", "select", "chapter",
+            "stage", "character", "hero", "item", "mode", "world",
+        }
+        is_card_target = (
+            getattr(plan, "element_type", None) == "card"
+            or any(kw in plan.target_description.lower() for kw in _CARD_KEYWORDS)
+        )
+        if is_card_target:
+            fb    = plan.fallback_bounds or {}
+            fb_h  = (fb.get("y2", 0) or 0) - (fb.get("y1", 0) or 0)
+            if fb_h < 60:
+                log.append(
+                    f"T2b [card_sanity] element_type={getattr(plan,'element_type',None)} "
+                    f"bounds_h={fb_h}px < 60px — looks text-only; firing card re-query"
+                )
+                card_coords = self._vlm_card_bounds_requery(perception, plan)
+                if card_coords:
+                    cx2b, cy2b = card_coords
+                    r = self._executor.tap_at(cx2b, cy2b)
+                    log.append(
+                        f"T2b [card_requery] ({cx2b},{cy2b}) → "
+                        f"{'OK' if r.success else r.error}"
+                    )
+                    if r.success:
+                        return ActionReport(
+                            success=True, tier_used=2, method="T2b:card_requery",
+                            coordinates={"x": cx2b, "y": cy2b},
+                            action_type=at, attempt_logs=log,
+                        )
+            else:
+                log.append(
+                    f"T2b [card_sanity] bounds_h={fb_h}px >= 60px — "
+                    f"bounds look correct, skipping re-query"
+                )
 
         # 2d: Fuzzy UiAutomator text match — from VLM's target_description
         hint = plan.target_description.split()[0][:20] if plan.target_description else ""
@@ -520,6 +565,87 @@ class ActionAgent(BaseAgent):
             return (x, y)
 
         print("[action_agent] VLM re-ask: returned (0,0) — element not found on screen")
+        return None
+
+    def _vlm_card_bounds_requery(
+        self,
+        perception: PerceptionState,
+        plan:       DecisionPlan,
+    ) -> Optional[tuple[int, int]]:
+        """
+        Targeted VLM re-query for CARD/TILE elements.
+
+        Called by Tier 2b when the fallback_bounds look text-only (height < 60px)
+        but the target is a card (image artwork + text label composite element).
+
+        Sends the annotated screenshot with an explicit prompt asking for the
+        IMAGE CENTER of the card — NOT the text label center.  The prompt also
+        tells the VLM to look for the cyan CARD(cx,cy) annotations drawn by
+        image_analyzer.py so it can read off the pre-computed image center directly.
+
+        Returns (x, y) image center coordinates, or None on failure.
+        """
+        screenshot_b64 = perception.annotated_b64 or perception.screenshot_b64
+        if not screenshot_b64:
+            print("[action_agent] T2b card_requery: no screenshot — skipping")
+            return None
+
+        prompt = (
+            f"CARD BOUNDS RE-QUERY\n"
+            f"{'─'*50}\n"
+            f"I need to tap the IMAGE CENTER of this card/tile element:\n\n"
+            f"  TARGET : {plan.target_description}\n"
+            f"  SCREEN : {perception.screen_w}×{perception.screen_h} px\n\n"
+            f"CARD STRUCTURE: image artwork (large area, ~120-160px tall) ABOVE\n"
+            f"                text label (small, ~20-25px) below it.\n\n"
+            f"Your task:\n"
+            f"  1. Look for CYAN boxes labelled 'CARD(cx,cy)' on the screenshot.\n"
+            f"     If present → that IS the image center — use it directly.\n"
+            f"  2. If no cyan annotation → visually locate the card artwork area\n"
+            f"     (the large image/thumbnail portion) and return its center.\n"
+            f"  3. Do NOT return the text label center — that is 40-80px too low.\n\n"
+            f"Return ONLY raw JSON:\n"
+            f'  {{"x": <image_center_x>, "y": <image_center_y>, "found": true,\n'
+            f'   "card_x1": <int>, "card_y1": <int>, "card_x2": <int>, "card_y2": <int>,\n'
+            f'   "reason": "<brief description>"}}\n\n'
+            f"If the card is NOT visible:\n"
+            f'  {{"x": 0, "y": 0, "found": false, "reason": "<why not visible>"}}'
+        )
+
+        lean_prompt = (
+            f"CARD TARGET: {plan.target_description[:80]}\n"
+            f"SCREEN: {perception.screen_w}×{perception.screen_h}\n"
+            f"Find the IMAGE CENTER of this card (not text label).\n"
+            f"Look for cyan CARD(cx,cy) annotation if present.\n"
+            f"Return JSON: {{\"x\": int, \"y\": int, \"found\": bool, \"reason\": str}}"
+        )
+
+        content = self.build_image_message(screenshot_b64, prompt)
+        result  = self.call_llm(user_content=content, lean_content=lean_prompt)
+
+        if result.get("llm_failed"):
+            print(f"[action_agent] T2b card_requery: LLM failed — "
+                  f"{result.get('error', '?')}")
+            return None
+
+        if not result.get("found", False):
+            print(f"[action_agent] T2b card_requery: card not found — "
+                  f"{result.get('reason', 'no reason')[:60]}")
+            return None
+
+        try:
+            x = int(result.get("x", 0))
+            y = int(result.get("y", 0))
+        except (TypeError, ValueError):
+            print(f"[action_agent] T2b card_requery: invalid coords in response: {result}")
+            return None
+
+        if x > 0 and y > 0:
+            print(f"[action_agent] T2b card_requery: ✅ image center ({x},{y}) — "
+                  f"{result.get('reason', '')[:60]}")
+            return (x, y)
+
+        print("[action_agent] T2b card_requery: returned (0,0) — card not found")
         return None
 
     # =========================================================================

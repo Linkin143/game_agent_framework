@@ -14,8 +14,8 @@
   "app_package": "com.netflix.NGP.BloonsTDSix",
 
   "steps": [
-    "Launch Bloons TD6 and wait for it to fully open past any loading screens",
-    "Dismiss any splash screen, promotional popup, or update notification",
+    "Launch Bloons TD6",
+    "Wait for 20 seconds to welcome screen",
     "Tap the START button on the Welcome menu to reach the Main Menu screen",
     "Tap the PLAY button on the main menu to reach the map selection screen",
     "Select the first available map (Monkey Meadow or any unlocked map)",

@@ -185,6 +185,59 @@ class ImageAnalyzer:
             x1, y1, x2, y2 = word.bbox
             cv2.rectangle(img, (x1, y1), (x2, y2), (255, 220, 0), 1)
 
+        # ── Card / Tile Group Detection ───────────────────────────────────────
+        # A "card" is a composite element: image artwork ABOVE a text label.
+        # For each OCR word, look at the image region directly above it.
+        # If that region has high pixel variance (image content, not blank BG),
+        # annotate a CARD box with the image center marked by a crosshair.
+        #
+        # The CARD(cx,cy) label printed on the screenshot gives the VLM the
+        # EXACT image-center coordinates to use as the tap target — preventing
+        # it from tapping the text-label center (40–80px too low).
+        CARD_COLOR      = (0, 220, 255)    # vivid cyan — distinct from green/yellow
+        CARD_STD_THRESH = 18.0             # pixel std-dev; below = blank/solid BG
+        CARD_LOOK_UP_PX = 220              # max px to look above the text label
+
+        for word in (ocr_words or []):
+            if word.confidence < 0.50:
+                continue
+            x1t, y1t, x2t, y2t = word.bbox
+            word_w = x2t - x1t
+            if word_w < 40:              # too narrow to be a card label
+                continue
+            look_up = min(CARD_LOOK_UP_PX, y1t)
+            if look_up < 40:
+                continue
+            # Sample image region directly above the text label
+            region = image_np[y1t - look_up : y1t, x1t : x2t]
+            if region.size == 0:
+                continue
+            region_std = float(np.std(region.astype(np.float32)))
+            if region_std < CARD_STD_THRESH:
+                continue                  # blank/solid colour — not an image card
+
+            # Found a card element — compute full card bounds and image center
+            card_x1 = max(0, x1t - 4)
+            card_y1 = max(0, y1t - look_up)
+            card_x2 = min(w, x2t + 4)
+            card_y2 = min(h, y2t)
+            img_cx  = (card_x1 + card_x2) // 2
+            img_cy  = (card_y1 + y1t) // 2    # center of IMAGE area only (above label)
+
+            # Draw cyan card outline (2px)
+            cv2.rectangle(img, (card_x1, card_y1), (card_x2, card_y2), CARD_COLOR, 2)
+
+            # Draw crosshair at IMAGE center (shows VLM the correct tap point)
+            cv2.drawMarker(img, (img_cx, img_cy), CARD_COLOR,
+                           cv2.MARKER_CROSS, markerSize=14, thickness=1)
+
+            # Print CARD(cx,cy) label at top-left of box (shadow + foreground)
+            tag = f"CARD({img_cx},{img_cy})"
+            cv2.putText(img, tag, (card_x1 + 2, card_y1 + 12),
+                        LABEL_FONT, LABEL_SCALE, SHADOW_COLOR, LABEL_THICK, cv2.LINE_AA)
+            cv2.putText(img, tag, (card_x1 + 1, card_y1 + 11),
+                        LABEL_FONT, LABEL_SCALE, CARD_COLOR, LABEL_THICK, cv2.LINE_AA)
+
         return img
 
     @staticmethod

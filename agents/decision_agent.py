@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,21 @@ from agents.base_agent import BaseAgent
 from agents.perception_agent import PerceptionState
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
+
+# ─── Dynamic-Wait Detection Constants ────────────────────────────────────────
+# Regex: matches "wait for 40 seconds", "wait 15s", "wait 3.5 sec", etc.
+_WAIT_DUR_RE = re.compile(
+    r'\bwait\s+(?:for\s+)?(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s\b)',
+    re.IGNORECASE,
+)
+
+# OCR keywords that indicate a loading / connecting / pending screen state
+_LOADING_KEYWORDS: frozenset[str] = frozenset({
+    "loading", "downloading", "connecting", "reconnecting",
+    "processing", "pending", "syncing", "please wait",
+    "initializing", "preparing", "server connection",
+    "connecting to server", "waiting for server",
+})
 
 
 @dataclass
@@ -44,6 +60,9 @@ class DecisionPlan:
     # Subgoal update
     subgoal_complete:    bool
     suggested_next_subgoal: Optional[str]
+
+    # Card/tile element flag (set by VLM when target is an image+label card)
+    element_type:        Optional[str] = None   # "card" | None
 
 
 class DecisionAgent(BaseAgent):
@@ -204,6 +223,36 @@ class DecisionAgent(BaseAgent):
         dismiss_words = ["NOT NOW", "LATER", "NO THANKS", "SKIP"]
         allow_words = ["ALLOW", "ACCEPT", "AGREE", "OK", "PERMIT"]
 
+        # ── PRIORITY 0: Dynamic Wait Detection ───────────────────────────
+        # Checks step text for an explicit duration AND OCR for loading
+        # keywords.  Returns a wait hint BEFORE any tap logic so a step
+        # like "wait for 40 seconds to load" is never converted to a tap.
+        should_wait, wait_dur, wait_reason = self._detect_wait_condition(
+            subgoal, p.all_text
+        )
+        if should_wait:
+            # High confidence when the step text explicitly names a duration;
+            # slightly lower when we infer from OCR loading keywords only.
+            conf = 0.95 if "specifies" in wait_reason else 0.80
+            print(f"[decision_agent] Dynamic wait hint: {wait_reason} "
+                  f"({wait_dur}s, conf={conf:.2f})")
+            return DecisionPlan(
+                screen_assessment=      wait_reason,
+                subgoal_progress=       subgoal,
+                rendering_engine=       p.rendering_engine,
+                blocking_element=       None,
+                action_type=            "wait",
+                target_description=     wait_reason,
+                locators=               [],
+                fallback_bounds=        {},
+                type_payload=           str(wait_dur),
+                template_name=          "",
+                confidence=             conf,
+                reasoning=              wait_reason,
+                subgoal_complete=       False,
+                suggested_next_subgoal= None,
+            )
+
         # ── PRIORITY 1: XML accessibility tree ───────────────────────────
         # Check XML for clickable blocking elements first
         for el in p.selector_map:
@@ -286,6 +335,48 @@ class DecisionAgent(BaseAgent):
                                                         f"OCR canvas: tapping '{pw}' button")
 
         return None
+
+    @staticmethod
+    def _detect_wait_condition(
+        subgoal:  str,
+        all_text: str,
+    ) -> tuple[bool, float, str]:
+        """
+        Pure-Python wait detector — no LLM call.
+
+        Returns (should_wait, duration_seconds, reason_string).
+
+        Three sources checked in priority order:
+          1. Explicit duration in step/subgoal text
+             e.g. "wait for 40 seconds to load" → (True, 40.0, "Step specifies wait 40s")
+          2. Step says "wait" (no duration) + OCR shows loading keyword
+             e.g. "wait for Play screen" + OCR "Loading…" → (True, 3.0, "…")
+          3. OCR shows clear loading keyword only (no wait in step)
+             e.g. OCR "Connecting to server" → (True, 3.0, "…") (lower-conf hint)
+        """
+        # Source 1: explicit numeric duration in the step text
+        m = _WAIT_DUR_RE.search(subgoal)
+        if m:
+            dur = float(m.group(1))
+            return True, dur, f"Step specifies wait {dur}s"
+
+        # Source 2 + 3: step says "wait" AND/OR OCR loading keyword
+        step_says_wait = bool(re.search(r'\bwait\b', subgoal, re.IGNORECASE))
+        ocr_lower      = all_text.lower()
+        loading_hit    = next(
+            (kw for kw in _LOADING_KEYWORDS if kw in ocr_lower), None
+        )
+
+        if step_says_wait and loading_hit:
+            return True, 3.0, (
+                f"Step says 'wait' + OCR loading keyword: '{loading_hit}'"
+            )
+
+        if loading_hit:
+            # Screen is loading even without an explicit wait in the step
+            return True, 3.0, f"OCR loading keyword detected: '{loading_hit}'"
+
+        return False, 0.0, ""
 
     @staticmethod
     def _make_ocr_tap_plan(
@@ -403,15 +494,33 @@ class DecisionAgent(BaseAgent):
             f"YOUR TASK — Cross-reference screenshot + XML + OCR then decide:\n"
             f"  1. If XML has a visible [TAP] element → use accessibility_id or text locator\n"
             f"  2. If game canvas (no XML) → use pixel coordinates from the screenshot grid\n"
-            f"  3. fallback_bounds MUST cover the FULL visual element (image area + label).\n"
+            f"  3. CARD/TILE ELEMENTS — Look for CYAN-outlined boxes labelled 'CARD(cx,cy)'\n"
+            f"     on the screenshot. These are auto-detected card elements (image + label).\n"
+            f"     → The CARD(cx,cy) value shown IS the image center — use it directly.\n"
+            f"     → Set fallback_bounds to the full cyan box bounds.\n"
+            f"     → Set element_type='card' in your JSON response.\n"
+            f"     → Do NOT use the text label's ocr_center for cards.\n"
+            f"  4. MANUAL CARD DETECTION (if no cyan annotation present):\n"
+            f"     fallback_bounds MUST cover the FULL visual element (image area + label).\n"
             f"     Set cx/cy to the CENTER of the IMAGE/ICON area, NOT the text label below it.\n"
-            f"     Example: a map thumbnail is 200×140px image + 20px text label beneath.\n"
-            f"     → fallback_bounds: x1/y1=top-left of tile, x2/y2=bottom of label\n"
-            f"     → cx/cy: center of the IMAGE portion (approx y1 + 70px), NOT label center\n"
-            f"  4. ocr_center locator: ONLY use for pure text buttons (e.g. 'PLAY', 'EASY').\n"
-            f"     Do NOT set ocr_center for image thumbnails, map tiles, or icon buttons\n"
-            f"     that have a text label nearby — use fallback_bounds cx/cy instead.\n"
-            f"  5. Confidence ≥ 0.85 to act; if unsure set confidence=0.5\n\n"
+            f"     Example: map thumbnail 200×140px image at y=400, label at y=545–570.\n"
+            f"     → fallback_bounds: {{x1, y1=400, x2, y2=570, cx, cy=470}} (image center)\n"
+            f"     → element_type='card'\n"
+            f"  5. ocr_center locator: ONLY use for pure text buttons (e.g. 'PLAY', 'EASY').\n"
+            f"     Do NOT use ocr_center for image thumbnails, map tiles, or icon buttons.\n"
+            f"  6. Confidence >= 0.85 to act; if unsure set confidence=0.5\n\n"
+            f"WAIT ACTION — CHECK FIRST (before planning any tap):\n"
+            f"  W1. If the subgoal text says 'wait for X seconds' / 'wait X seconds' /\n"
+            f"      'wait X sec' / 'wait X s':\n"
+            f"      → action_type='wait',  type_payload='X'   (X as a plain number string)\n"
+            f"      Examples: 'wait for 40 seconds' → type_payload='40.0'\n"
+            f"                'wait 15 seconds'     → type_payload='15.0'\n"
+            f"  W2. If OCR shows ANY of: Loading / Downloading / Connecting / Processing /\n"
+            f"      Pending / Please wait / Reconnecting / Initializing / Server connection:\n"
+            f"      → action_type='wait',  type_payload='3.0'\n"
+            f"  W3. If subgoal says 'wait' (no explicit duration) AND OCR shows loading:\n"
+            f"      → action_type='wait',  type_payload='3.0'\n"
+            f"  W4. type_payload for wait MUST be a plain string number, e.g. '40.0', '3.0'\n\n"
             f"Return ONLY raw JSON — no markdown, no explanation."
         )
 
@@ -443,6 +552,7 @@ class DecisionAgent(BaseAgent):
             reasoning=              raw.get("reasoning", ""),
             subgoal_complete=       bool(raw.get("subgoal_complete", False)),
             suggested_next_subgoal= raw.get("suggested_next_subgoal"),
+            element_type=           raw.get("element_type"),
         )
 
     def _fallback_plan(self, p: PerceptionState, subgoal: str) -> DecisionPlan:

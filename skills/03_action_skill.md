@@ -137,13 +137,44 @@ using the correct action type. Choose the most appropriate action_type for the s
 
 ---
 
-### 8. `wait` / `sleep` / `pause` — Wait Without Acting
-**Use for:** Waiting for animations, loading screens, cooldowns.
-- `type_payload`: seconds to wait (float, e.g. `"2.0"`, `"3.5"`)
+### 8. `wait` / `sleep` / `pause` — Dynamic Wait
+**Use for:** Loading screens, animations, server connections, explicit step-specified delays.
+
+**Duration comes from TWO sources — check in this order:**
+
+**Source 1 — Step-specified duration (highest priority):**
+If the current subgoal says `"wait for X seconds"` / `"wait X seconds"` / `"wait X sec"`:
+→ `type_payload: "X"`   (extract the number, use it verbatim as a string)
+
+| Subgoal text | type_payload |
+|---|---|
+| `"Launch and wait for 40 seconds to load"` | `"40.0"` |
+| `"wait 15 seconds for server"` | `"15.0"` |
+| `"wait for 5 seconds"` | `"5.0"` |
+
+**Source 2 — Screen-detected loading state:**
+If OCR shows any loading keyword (Loading / Downloading / Connecting / Processing /
+Pending / Please wait / Reconnecting / Initializing / Syncing / Waiting for server):
+→ `type_payload: "3.0"`
+
+**Combined:** Subgoal says `"wait"` (no explicit number) AND OCR shows loading → `"3.0"`
+
+**IMPORTANT:** `type_payload` MUST be a plain string number — NO units, NO text.
+✅ Correct: `"40.0"` &nbsp; `"3.0"` &nbsp; `"15.0"`
+❌ Wrong:   `"40 seconds"` &nbsp; `"3s"` &nbsp; `"wait 15"`
+
 ```json
 {
   "action_type": "wait",
-  "type_payload": "2.5"
+  "target_description": "Step specifies wait 40s — welcome screen loading",
+  "type_payload": "40.0"
+}
+```
+```json
+{
+  "action_type": "wait",
+  "target_description": "OCR loading keyword detected: 'connecting'",
+  "type_payload": "3.0"
 }
 ```
 
@@ -183,6 +214,8 @@ using the correct action type. Choose the most appropriate action_type for the s
 | Zoom into game map | `zoom_in` |
 | Zoom out of game map | `zoom_out` |
 | Double-tap confirm / zoom | `double_tap` |
+| Step says "wait for X seconds" | `wait` with `type_payload="X"` |
+| OCR shows Loading / Connecting / Downloading | `wait` with `type_payload="3.0"` |
 | Loading screen / animation | `wait` |
 | Popup blocking progress | `back` or `tap` the X button |
 

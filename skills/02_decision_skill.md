@@ -27,6 +27,41 @@ If ANY of these are visible, handle them BEFORE the subgoal:
 | "Rate this app" dialog              | Tap "No thanks"     |
 | Network error dialog                | Tap "Retry"         |
 
+### Step 2.5: Dynamic Wait Detection (PRIORITY — check BEFORE planning any tap)
+
+Recognize wait situations from TWO sources and act on them FIRST, before planning any tap.
+
+**A. Step-Specified Wait (highest priority)**
+
+If the current subgoal/step text contains any of:
+- `"wait for X seconds"` / `"wait X seconds"` / `"wait X sec"` / `"wait X s"`
+
+→ Set `action_type: "wait"` and `type_payload: "X"` (the number as a plain string)
+
+| Step text | type_payload |
+|-----------|-------------|
+| `"wait for 40 seconds to welcome screen"` | `"40.0"` |
+| `"Launch the game and wait for 40 seconds to load"` | `"40.0"` |
+| `"wait 15 seconds for server connection"` | `"15.0"` |
+
+**B. Screen-Detected Loading State (OCR/vision signals)**
+
+If OCR text or screenshot visually shows ANY of these keywords:
+```
+Loading       Loading...    Please wait
+Downloading   Download XX%
+Connecting    Connecting to server    Reconnecting
+Processing    Pending       Syncing
+Initializing  Preparing     Waiting for server
+```
+→ Set `action_type: "wait"`, `type_payload: "3.0"`
+
+**Combined rule:** If the step says `"wait"` (no explicit duration) AND OCR shows a loading keyword → wait `3.0` seconds.
+
+**Important:** `type_payload` for wait MUST be a plain string number (e.g. `"40.0"`, `"3.0"`, `"15.0"`). Do NOT include units.
+
+---
+
 ### Step 3: Action Planning
 Once blocking elements are cleared, plan the next micro-action toward the subgoal:
 
@@ -85,7 +120,9 @@ Rate your confidence 0.0–1.0:
 
 ### When screen is loading/transitioning:
 - If animation_score > 0.05 → wait, do NOT act
-- Report action_type: "wait" with duration 2.0
+- Check Step 2.5 first: if subgoal specifies duration → use that duration
+- Otherwise: `action_type: "wait"`, `type_payload: "3.0"`
+- Never tap during an active loading/transition screen
 
 ### When goal is VERIFY_GAMEPLAY:
 - Look for: HUD elements, score counter, timer, lives/health indicator
