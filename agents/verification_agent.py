@@ -116,6 +116,8 @@ class VerificationAgent(BaseAgent):
         mode:             str = "oneliner",
         current_step_index: int = 0,
         total_steps:      int = 0,
+        # Step-anchored verification (Phase 1): expected next-screen text
+        wait_after_text:  Optional[str] = None,
     ) -> VerificationResult:
         """
         Verify whether the last action advanced the app toward the current
@@ -125,7 +127,11 @@ class VerificationAgent(BaseAgent):
             mode:               "oneliner" or "steps"
             current_step_index: zero-based index of the current step (steps mode)
             total_steps:        total number of steps in the recipe (steps mode)
+            wait_after_text:    when set (from the StepIntent's wait directive),
+                                the step only completes once this text is visible
+                                in post-action OCR. Gates premature advancement.
         """
+
         evidence: list[str] = []
 
         # ── Stage 1: Pixel diff ───────────────────────────────────────────
@@ -153,7 +159,9 @@ class VerificationAgent(BaseAgent):
                 action_report=      action_report,
                 diff=               diff,
                 evidence=           evidence,
+                wait_after_text=    wait_after_text,
             )
+
 
         # ── ONELINER MODE — use per-game config rules first ───────────────
         post_text = post.all_text.upper()
@@ -245,9 +253,11 @@ class VerificationAgent(BaseAgent):
         action_report: ActionReport,
         diff:          float,
         evidence:      list[str],
+        wait_after_text: Optional[str] = None,
     ) -> VerificationResult:
         """
         Verify completion of a single NLP step (steps mode).
+
 
         A step is considered complete when:
           • The action itself succeeded (tier reported success) AND
@@ -272,7 +282,27 @@ class VerificationAgent(BaseAgent):
 
         evidence.append(f"is_verify_step={is_verify_step} is_last_step={is_last_step}")
 
+        # ── Step-anchored WAIT gate (Phase 1) ────────────────────────────
+        # If the StepIntent declared an expected next-screen text (e.g.
+        # "...then wait for the 'EASY' screen"), the step must NOT complete
+        # until that text is visible in post-action OCR. This prevents the
+        # orchestrator from racing ahead through a loading transition.
+        if wait_after_text:
+            expect_up = wait_after_text.strip().upper()
+            gate_ok   = expect_up in post_text
+            evidence.append(f"wait_after='{expect_up}' satisfied={gate_ok}")
+            if not gate_ok:
+                return VerificationResult(
+                    verdict="ACTION_SUCCESS", subgoal_complete=False, goal_achieved=False,
+                    pixel_diff_score=diff, evidence=evidence, next_subgoal=step_text,
+                    reasoning=(
+                        f"Step waiting for expected screen text '{expect_up}' "
+                        f"to appear before completing: {step_text[:40]}"
+                    ),
+                )
+
         # ── Verify-type step: trust VLM verdict first, OCR as fallback ───
+
         if is_verify_step:
             # PRIORITY 1: Trust VLM's explicit visual verify verdict.
             # If ActionAgent handled the step as action_type="verify" and

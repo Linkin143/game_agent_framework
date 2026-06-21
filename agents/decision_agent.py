@@ -64,6 +64,23 @@ class DecisionPlan:
     # Card/tile element flag (set by VLM when target is an image+label card)
     element_type:        Optional[str] = None   # "card" | None
 
+    # ── Set-of-Mark (SoM) targeting ──────────────────────────────────────────
+    # When the VLM SELECTS a numbered element instead of estimating pixels, it
+    # returns element_id. The action agent looks up the exact center from the
+    # perception.element_registry — guaranteeing pixel-accurate taps on small
+    # icons and label+image composites.
+    element_id:          Optional[int] = None    # SoM registry id (1..N)
+
+    # ── Step-anchored repeat / interval (from StepIntent) ───────────────────
+    # "Tap the white triangle button four times in interval of one second gap"
+    #   → repeat=4, interval_s=1.0
+    repeat:              int   = 1               # number of times to tap
+    interval_s:          float = 0.0             # seconds to wait between taps
+
+    # Step-anchored verification hint: tap is confirmed once this text appears.
+    wait_after_text:     Optional[str] = None
+
+
 
 class DecisionAgent(BaseAgent):
     """
@@ -101,9 +118,23 @@ class DecisionAgent(BaseAgent):
         current_subgoal: str,
         goal:            str,
         stuck_count:     int = 0,
+        step_intent:     Optional[object] = None,
     ) -> DecisionPlan:
         """
         Main decision method: analyze screen + subgoal → produce action plan.
+
+        step_intent (StepIntent, optional)
+        ──────────────────────────────────
+        In steps mode the orchestrator parses the current step string into a
+        structured StepIntent (action, target_text, repeat, interval_s,
+        wait_after, wait_seconds). When present it enables two deterministic
+        fast paths BEFORE the VLM call:
+          • Explicit wait     → return a wait plan with the parsed duration.
+          • Exact-text anchor  → if the quoted step text matches a registry
+            element exactly, return a SoM tap plan with the element's exact
+            center (no pixel guessing). Solves the label+image + small-icon
+            accuracy cases when the step names the target.
+
 
         DESIGN PRINCIPLE — Live Screenshot is ALWAYS sent to Claude Vision:
         ─────────────────────────────────────────────────────────────────────
@@ -119,6 +150,19 @@ class DecisionAgent(BaseAgent):
         """
         print(f"[decision_agent] DECIDE | subgoal='{current_subgoal}' "
               f"engine='{perception.rendering_engine}' stuck={stuck_count}")
+
+        # ── Step 0: Step-anchored deterministic fast paths (steps mode) ──────
+        # When a StepIntent is available, two zero-LLM paths can resolve the
+        # action with guaranteed pixel accuracy. Only used while not stuck so
+        # repeated failures still fall through to the VLM for re-grounding.
+        if step_intent is not None and stuck_count == 0:
+            anchored = self._step_anchored_plan(perception, current_subgoal, step_intent)
+            if anchored is not None:
+                print(f"[decision_agent] ⚓ Step-anchored plan: "
+                      f"action={anchored.action_type} "
+                      f"target='{anchored.target_description[:40]}' "
+                      f"conf={anchored.confidence:.2f}")
+                return anchored
 
         # Step 1: Run heuristic to generate a HINT (not a bypass)
         heuristic_hint: Optional[DecisionPlan] = self._fast_heuristic(perception, current_subgoal)
@@ -202,10 +246,112 @@ class DecisionAgent(BaseAgent):
         return plan
 
     # -------------------------------------------------------------------------
+    # Private: Step-Anchored Deterministic Planning (steps mode, no LLM)
+    # -------------------------------------------------------------------------
+
+    def _step_anchored_plan(
+        self,
+        p:           PerceptionState,
+        subgoal:     str,
+        step_intent: object,
+    ) -> Optional[DecisionPlan]:
+        """
+        Build a pixel-accurate DecisionPlan directly from the parsed StepIntent,
+        with NO LLM call, when the step gives us a deterministic anchor.
+
+        Two anchors, in priority order:
+
+          A. Explicit wait
+             StepIntent.action == "wait" OR StepIntent.wait_seconds set.
+             → return a wait plan with the parsed duration.
+
+          B. Exact-text element anchor
+             StepIntent.target_text (the quoted text in the step, e.g.
+             'MONKEY MEADOW') matches a UIElement in the registry.
+             → return a SoM tap plan whose coordinates ARE the element's exact
+               center (composite center = IMAGE center, solving label+image;
+               XML/OCR center for plain buttons). repeat / interval / wait_after
+               are carried through from the StepIntent.
+
+        Returns None when no deterministic anchor applies — the caller then
+        proceeds to the normal heuristic-hint + VLM path (which now also gets
+        the SoM registry overlay and can SELECT element_id by number).
+        """
+        action       = getattr(step_intent, "action", "tap")
+        target_text  = getattr(step_intent, "target_text", None)
+        repeat       = int(getattr(step_intent, "repeat", 1) or 1)
+        interval_s   = float(getattr(step_intent, "interval_s", 0.0) or 0.0)
+        wait_after   = getattr(step_intent, "wait_after", None)
+        wait_seconds = getattr(step_intent, "wait_seconds", None)
+        wait_after_text = (wait_after or {}).get("expect_text") if wait_after else None
+
+        # ── Anchor A: explicit wait ──────────────────────────────────────
+        if action == "wait" or wait_seconds is not None:
+            dur = float(wait_seconds if wait_seconds is not None else 3.0)
+            return DecisionPlan(
+                screen_assessment=      f"Step-anchored wait {dur}s",
+                subgoal_progress=       subgoal,
+                rendering_engine=       p.rendering_engine,
+                blocking_element=       None,
+                action_type=            "wait",
+                target_description=     f"wait {dur}s (from step)",
+                locators=               [],
+                fallback_bounds=        {},
+                type_payload=           str(dur),
+                template_name=          "",
+                confidence=             0.96,
+                reasoning=              f"StepIntent parsed explicit wait of {dur}s",
+                subgoal_complete=       False,
+                suggested_next_subgoal= None,
+                repeat=                 1,
+                interval_s=             0.0,
+                wait_after_text=        wait_after_text,
+            )
+
+        # ── Anchor B: exact-text element anchor (the heart of accuracy) ──
+        if not target_text:
+            return None
+
+        el = p.find_element_by_text(target_text)
+        if el is None:
+            # No registry match — let the SoM-augmented VLM path handle it.
+            return None
+
+        cx, cy = el.center
+        x1, y1, x2, y2 = el.bbox
+        return DecisionPlan(
+            screen_assessment=      f"Step anchor '{target_text}' → registry element #{el.id} ({el.kind})",
+            subgoal_progress=       subgoal,
+            rendering_engine=       p.rendering_engine,
+            blocking_element=       None,
+            action_type=            "tap",
+            target_description=     f"'{target_text}' ({el.kind} #{el.id}) at ({cx},{cy})",
+            locators=               [{"type": "coords", "value": f"{cx},{cy}"}],
+            fallback_bounds=        {"x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                                     "cx": cx, "cy": cy},
+            type_payload=           "",
+            template_name=          "",
+            confidence=             0.93,
+            reasoning=(
+                f"Exact step-text anchor '{target_text}' matched registry "
+                f"element #{el.id} (kind={el.kind}, source={el.source}). "
+                f"Using its exact center ({cx},{cy}) — no pixel estimation."
+            ),
+            subgoal_complete=       False,
+            suggested_next_subgoal= None,
+            element_type=           "card" if el.kind == "composite" else None,
+            element_id=             el.id,
+            repeat=                 repeat,
+            interval_s=             interval_s,
+            wait_after_text=        wait_after_text,
+        )
+
+    # -------------------------------------------------------------------------
     # Private: Fast Heuristics (no LLM call)
     # -------------------------------------------------------------------------
 
     def _fast_heuristic(
+
         self,
         p: PerceptionState,
         subgoal: str,
@@ -455,6 +601,28 @@ class DecisionAgent(BaseAgent):
                      if ocr_lines else
                      "  (none — use screenshot pixel coordinates)")
 
+        # ── SET-OF-MARK registry (numbered tappable proposals) ───────────
+        # The annotated image sent to the VLM has numbered coloured boxes.
+        # The VLM should SELECT a target by its number (element_id) instead of
+        # estimating pixels — this is far more accurate on small icons and
+        # label+image composites.
+        registry = getattr(p, "element_registry", None) or []
+        if registry:
+            som_block = (
+                f"\n▶ SET-OF-MARK ELEMENTS ({len(registry)} numbered, shown on image):\n"
+                f"{getattr(p, 'registry_text', '')}\n"
+                f"  ▸ Each [NN] is a numbered box drawn on the screenshot at its EXACT\n"
+                f"    tap center (crosshair). 'composite' = image+label card (center is\n"
+                f"    the IMAGE, not the text). 'icon' = graphic with no text.\n"
+                f"  ▸ STRONGLY PREFER selecting one of these by number: set\n"
+                f"    \"element_id\": NN in your JSON. The framework converts NN into the\n"
+                f"    element's exact pixel center automatically — you do NOT need to\n"
+                f"    output x,y for it. Only fall back to raw coordinates if the target\n"
+                f"    is genuinely not in the numbered list.\n"
+            )
+        else:
+            som_block = ""
+
         # ── HEURISTIC HINT (pre-computed suggestion for VLM to confirm) ──
         hint_block = ""
         if hint:
@@ -489,6 +657,7 @@ class DecisionAgent(BaseAgent):
 
             f"▶ SUPPLEMENTARY — OCR TEXT (game canvas text visible on screen):\n"
             f"{ocr_block}\n"
+            f"{som_block}\n"
             f"{hint_block}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"YOUR TASK — Cross-reference screenshot + XML + OCR then decide:\n"
@@ -524,7 +693,13 @@ class DecisionAgent(BaseAgent):
             f"Return ONLY raw JSON — no markdown, no explanation."
         )
 
-        return self.build_image_message(p.annotated_b64 or p.screenshot_b64, text_ctx)
+        # Prefer the SoM (numbered) overlay so the VLM can SELECT by number.
+        primary_image = (
+            getattr(p, "registry_annotated_b64", "")
+            or p.annotated_b64
+            or p.screenshot_b64
+        )
+        return self.build_image_message(primary_image, text_ctx)
 
     def _build_lean_content(self, p: PerceptionState, subgoal: str) -> str:
         """Minimal text prompt for LLM retry."""
@@ -537,15 +712,45 @@ class DecisionAgent(BaseAgent):
 
     def _parse_plan(self, raw: dict, p: PerceptionState) -> DecisionPlan:
         """Parse LLM response dict into DecisionPlan."""
-        return DecisionPlan(
+        locators        = raw.get("locators", []) or []
+        fallback_bounds = raw.get("fallback_bounds", {}) or {}
+
+        # ── Set-of-Mark resolution ───────────────────────────────────────
+        # If the VLM SELECTED a numbered element (element_id), look up its
+        # EXACT center in the registry and inject that as a coords locator +
+        # fallback_bounds. This converts a "pick a number" answer into a
+        # pixel-perfect tap target — no estimation involved.
+        element_id = raw.get("element_id")
+        try:
+            element_id = int(element_id) if element_id is not None else None
+        except (TypeError, ValueError):
+            element_id = None
+
+        if element_id is not None:
+            el = p.get_element(element_id)
+            if el is not None:
+                cx, cy = el.center
+                x1, y1, x2, y2 = el.bbox
+                # Prepend the exact center so action_agent uses it first.
+                locators        = [{"type": "coords", "value": f"{cx},{cy}"}] + locators
+                fallback_bounds = {"x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                                   "cx": cx, "cy": cy}
+                print(f"[decision_agent] SoM: VLM selected element #{element_id} "
+                      f"({el.kind}, text='{el.text}') → exact center ({cx},{cy})")
+            else:
+                print(f"[decision_agent] SoM: VLM selected element #{element_id} "
+                      f"but it is not in the registry — ignoring")
+                element_id = None
+
+        plan = DecisionPlan(
             screen_assessment=      raw.get("screen_assessment", ""),
             subgoal_progress=       raw.get("subgoal_progress", ""),
             rendering_engine=       raw.get("rendering_engine", p.rendering_engine),
             blocking_element=       raw.get("blocking_element"),
             action_type=            raw.get("action_type", "tap"),
             target_description=     raw.get("target_description", ""),
-            locators=               raw.get("locators", []),
-            fallback_bounds=        raw.get("fallback_bounds", {}),
+            locators=               locators,
+            fallback_bounds=        fallback_bounds,
             type_payload=           raw.get("type_payload", ""),
             template_name=          raw.get("template_name", ""),
             confidence=             float(raw.get("confidence", 0.5)),
@@ -553,7 +758,20 @@ class DecisionAgent(BaseAgent):
             subgoal_complete=       bool(raw.get("subgoal_complete", False)),
             suggested_next_subgoal= raw.get("suggested_next_subgoal"),
             element_type=           raw.get("element_type"),
+            element_id=             element_id,
         )
+
+        # Carry through repeat / interval if the VLM echoed them.
+        try:
+            plan.repeat = max(1, int(raw.get("repeat", 1) or 1))
+        except (TypeError, ValueError):
+            plan.repeat = 1
+        try:
+            plan.interval_s = float(raw.get("interval_s", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            plan.interval_s = 0.0
+        return plan
+
 
     def _fallback_plan(self, p: PerceptionState, subgoal: str) -> DecisionPlan:
         """Deterministic fallback when LLM fails completely."""

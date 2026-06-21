@@ -24,6 +24,7 @@ from agents.action_agent import ActionAgent
 from agents.verification_agent import VerificationAgent, SUBGOAL_ORDER
 from agents.memory_agent import MemoryAgent
 from core.action_executor import ActionExecutor
+from core.step_parser import parse_step, StepIntent
 
 # ─── LangGraph Shared State ───────────────────────────────────────────────────
 
@@ -190,16 +191,31 @@ class GameOrchestrator:
     def _node_test(self, state: GameAgentState) -> GameAgentState:
         """TEST: Decision agent analyzes screen and plans action."""
         perception = state["perception"]
+
+        # ── STEPS MODE: parse the current step string into a StepIntent ────
+        # The StepIntent provides a deterministic, regex-derived anchor
+        # (quoted target text, repeat count, interval, wait directives) that
+        # the DecisionAgent uses for step-anchored SoM targeting.
+        step_intent: Optional[StepIntent] = None
+        if state.get("mode") == "steps":
+            step_intent = parse_step(state["current_subgoal"])
+            print(f"[orchestrator] STEP INTENT → {step_intent.summary()}")
+        # Stash for the VERIFY node (used for the wait_after_text gate).
+        state["step_intent"] = step_intent
+
         plan = self._da.decide(
+
             perception=      perception,
             current_subgoal= state["current_subgoal"],
             goal=            state["goal"],
             stuck_count=     state.get("stuck_count", 0),
+            step_intent=     step_intent,
         )
         state["decision_plan"] = plan
         print(f"[orchestrator] TEST → action={plan.action_type} "
               f"target='{plan.target_description[:40]}' conf={plan.confidence:.2f}")
         return state
+
 
     def _node_act(self, state: GameAgentState) -> GameAgentState:
         """ACT: Execute the planned action through 3-tier repair."""
@@ -269,6 +285,13 @@ class GameOrchestrator:
         steps         = state.get("steps", [])
         total_steps   = len(steps)
 
+        # Step-anchored wait gate: pull expected next-screen text (if any)
+        # from the StepIntent stashed by the TEST node.
+        wait_after_text = None
+        si = state.get("step_intent")
+        if si is not None and getattr(si, "wait_after", None):
+            wait_after_text = si.wait_after.get("expect_text")
+
         result = self._va.verify(
             pre=               pre or post,
             post=              post,
@@ -278,7 +301,9 @@ class GameOrchestrator:
             mode=              mode,
             current_step_index=step_index,
             total_steps=       total_steps,
+            wait_after_text=   wait_after_text,
         )
+
         state["verification"] = result
 
         print(f"[orchestrator] VERIFY: {result.verdict} | "

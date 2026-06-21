@@ -279,6 +279,16 @@ class ActionAgent(BaseAgent):
             return ActionReport(success=r.success, tier_used=2, method=r.method,
                                 coordinates=r.coordinates, action_type=at, attempt_logs=log)
 
+        # ── TIER SoM: Step/registry-anchored exact tap ───────────────────
+        # When the decision came from a step-text anchor or a VLM Set-of-Mark
+        # selection (plan.element_id set, OR a coords locator derived from the
+        # registry), we already have the EXACT element center. Tap it directly,
+        # honour repeat/interval, and self-heal by re-tapping the registry
+        # neighbour if the screen did not change.
+        som_report = self._try_som_tap(plan, perception, at, log)
+        if som_report is not None:
+            return som_report
+
         # ── TIER 1: Semantic element locators (VLM-provided) ─────────────
         log.append("── TIER 1: Semantic Element Locators ──")
         tried = set()
@@ -647,6 +657,141 @@ class ActionAgent(BaseAgent):
 
         print("[action_agent] T2b card_requery: returned (0,0) — card not found")
         return None
+
+    # =========================================================================
+    # Private: Set-of-Mark Exact Tap (+ repeat/interval + self-heal)
+    # =========================================================================
+
+    def _try_som_tap(
+        self,
+        plan:       DecisionPlan,
+        perception: PerceptionState,
+        at:         str,
+        log:        list,
+    ) -> Optional[ActionReport]:
+        """
+        Pixel-accurate tap using a Set-of-Mark / step-anchored target.
+
+        Fires ONLY for tap-like actions when the plan carries an exact center,
+        which happens when:
+          • plan.element_id is set (VLM selected a numbered SoM element), OR
+          • the step-text anchor produced a coords locator from the registry.
+
+        In both cases the center already IS the element's true tap point
+        (composite center = IMAGE center for label+image cards; geometric
+        center for icons/buttons). No estimation, no OCR-label offset.
+
+        Extra robustness:
+          • repeat / interval  — taps N times with a gap (e.g. "tap 4 times,
+            1s apart"). All repeats use the SAME exact coordinate.
+          • tap-verify-correct — for a SINGLE tap, frame-diff before/after; if
+            the screen did not change, retry once at the registry element's
+            center (covers a stale-coordinate race). Repeat taps skip this so
+            we never double the requested count.
+
+        Returns an ActionReport when it handled the action, or None to let the
+        normal tier cascade run (no exact anchor available).
+        """
+        if at not in ("tap", "click", "press", "select", "touch"):
+            return None
+
+        # Resolve the exact center: prefer the registry element, else the
+        # first coords locator, else fallback_bounds center.
+        cx = cy = 0
+        source = ""
+
+        el = None
+        if getattr(plan, "element_id", None) is not None:
+            el = perception.get_element(plan.element_id)
+        if el is not None:
+            cx, cy = el.center
+            source = f"registry#{el.id}({el.kind})"
+        else:
+            for loc in plan.locators:
+                if (loc.get("type") or "").lower() == "coords":
+                    parts = [s.strip() for s in str(loc.get("value", "")).split(",")]
+                    if len(parts) >= 2:
+                        try:
+                            cx, cy = int(parts[0]), int(parts[1])
+                            source = "coords_anchor"
+                            break
+                        except ValueError:
+                            pass
+
+        # Only engage when this looks like an anchored decision. A plain VLM
+        # plan with no element_id and an OCR/semantic intent should fall through.
+        anchored = (
+            el is not None
+            or getattr(plan, "element_id", None) is not None
+            or "anchor" in (plan.reasoning or "").lower()
+            or "registry" in (plan.screen_assessment or "").lower()
+        )
+        if not anchored or cx <= 0 or cy <= 0:
+            return None
+
+        repeat   = max(1, int(getattr(plan, "repeat", 1) or 1))
+        interval = max(0.0, float(getattr(plan, "interval_s", 0.0) or 0.0))
+
+        log.append(f"── TIER SoM: exact tap ({cx},{cy}) src={source} "
+                   f"repeat={repeat} interval={interval}s ──")
+        print(f"[action_agent] 🎯 SoM exact tap ({cx},{cy}) src={source} "
+              f"repeat={repeat} interval={interval}s")
+
+        # ── Repeated taps (e.g. "four times, one second apart") ──────────
+        if repeat > 1:
+            ok_any = False
+            for i in range(repeat):
+                r = self._executor.tap_at(cx, cy)
+                ok_any = ok_any or r.success
+                log.append(f"SoM tap {i+1}/{repeat} ({cx},{cy}) → "
+                           f"{'OK' if r.success else r.error}")
+                if i < repeat - 1 and interval > 0:
+                    self._executor.wait(interval)
+            return ActionReport(
+                success=ok_any, tier_used=1,
+                method=f"som_repeat_tap_x{repeat}",
+                coordinates={"x": cx, "y": cy}, action_type=at, attempt_logs=log,
+            )
+
+        # ── Single tap with tap-verify-correct self-heal ─────────────────
+        pre_np = perception.screenshot_np
+        r = self._executor.tap_at(cx, cy)
+        log.append(f"SoM tap ({cx},{cy}) → {'OK' if r.success else r.error}")
+        if not r.success:
+            log.append("SoM tap reported failure — falling through to tier cascade")
+            return None
+
+        # Verify the tap actually changed the screen.
+        if pre_np is not None:
+            try:
+                self._executor.wait(0.4)
+                post = self._capture_np()
+                if post is not None:
+                    diff = self._analyzer.pixel_diff(pre_np, post)
+                    log.append(f"SoM verify pixel_diff={diff:.3f}")
+                    if diff < 0.01:
+                        # No change — re-tap once at the same exact center.
+                        log.append("SoM self-heal: no screen change → re-tap once")
+                        print(f"[action_agent] SoM self-heal re-tap ({cx},{cy}) "
+                              f"(diff={diff:.3f})")
+                        r2 = self._executor.tap_at(cx, cy)
+                        log.append(f"SoM re-tap ({cx},{cy}) → "
+                                   f"{'OK' if r2.success else r2.error}")
+            except Exception as exc:
+                log.append(f"SoM verify skipped ({exc})")
+
+        return ActionReport(
+            success=True, tier_used=1, method=f"som_exact_tap:{source}",
+            coordinates={"x": cx, "y": cy}, action_type=at, attempt_logs=log,
+        )
+
+    def _capture_np(self):
+        """Best-effort fresh screenshot as numpy for self-heal verification."""
+        try:
+            cap = self._executor.screenshot()
+            return getattr(cap, "screenshot_np", None)
+        except Exception:
+            return None
 
     # =========================================================================
     # Private: Locator Router

@@ -19,6 +19,9 @@ from core.screen_capture import ScreenCapturer, ScreenCapture
 from core.ocr_engine import OCREngine, OCRResult, OCRWord
 from core.xml_extractor import XMLExtractor, XMLExtractionResult
 from core.image_analyzer import ImageAnalyzer
+from core.element_registry import (
+    propose_elements, annotate_registry, registry_as_text, UIElement,
+)
 
 
 @dataclass
@@ -57,7 +60,48 @@ class PerceptionState:
     animation_score:    float        # Pixel diff 0-1 (higher = more animation)
     is_stable:          bool         # True if animation_score < 0.03
 
+    # Set-of-Mark (SoM) Element Registry
+    # Numbered, deduplicated tappable proposals fused from XML + OCR + CV + composite.
+    # Lets the VLM SELECT a target by number instead of estimating raw pixels.
+    element_registry:     list = field(default_factory=list)   # list[UIElement]
+    registry_annotated_b64: str = ""                           # SoM numbered overlay (b64)
+    registry_text:        str  = ""                            # compact text table for prompt
+
+    def get_element(self, element_id: int):
+        """Return the UIElement with the given SoM id, or None."""
+        for e in (self.element_registry or []):
+            if getattr(e, "id", None) == element_id:
+                return e
+        return None
+
+    def find_element_by_text(self, text: str):
+        """
+        Return the best UIElement whose text matches `text` (exact, then
+        case-insensitive substring). Used for step-anchored exact targeting.
+        """
+        if not text:
+            return None
+        want = text.strip().lower()
+        # Pass 1: exact case-insensitive match
+        for e in (self.element_registry or []):
+            if (getattr(e, "text", "") or "").strip().lower() == want:
+                return e
+        # Pass 2: substring match, prefer richer kind + longer overlap
+        best, best_rank = None, -1.0
+        for e in (self.element_registry or []):
+            etext = (getattr(e, "text", "") or "").strip().lower()
+            if not etext:
+                continue
+            if want in etext or etext in want:
+                kind_rank = {"composite": 4, "xml": 3, "icon": 2, "text": 1}.get(
+                    getattr(e, "kind", ""), 0)
+                rank = kind_rank + min(len(etext), len(want)) / 100.0
+                if rank > best_rank:
+                    best, best_rank = e, rank
+        return best
+
     def to_context_dict(self) -> dict:
+
         """Return a dict suitable for LLM context (no numpy arrays)."""
         ocr_words = []
         if self.ocr_result:
@@ -172,6 +216,26 @@ class PerceptionAgent(BaseAgent):
                 print(f"[perception_agent] Annotation error: {exc}")
                 annotated_b64 = screenshot.screenshot_b64
 
+        # ── Set-of-Mark Element Registry ─────────────────────────────────
+        # Fuse XML + OCR + CV icon + composite proposals into a numbered
+        # registry, then render a numbered SoM overlay the VLM can SELECT from.
+        element_registry: list = []
+        registry_annotated_b64 = ""
+        registry_text = ""
+        if screenshot and screenshot.screenshot_np is not None:
+            try:
+                ocr_words = ocr_result.words if ocr_result else []
+                element_registry = propose_elements(
+                    screenshot.screenshot_np,
+                    xml_result.selector_map if xml_result else [],
+                    ocr_words,
+                )
+                som_img = annotate_registry(screenshot.screenshot_np, element_registry)
+                registry_annotated_b64 = self._analyzer.np_to_b64(som_img)
+                registry_text = registry_as_text(element_registry)
+            except Exception as exc:
+                print(f"[perception_agent] Registry error: {exc}")
+
         state = PerceptionState(
             timestamp=         t0,
             duration_ms=       (time.time() - t0) * 1000,
@@ -193,6 +257,9 @@ class PerceptionAgent(BaseAgent):
             rendering_engine=  rendering_engine,
             animation_score=   animation_score,
             is_stable=         is_stable,
+            element_registry=  element_registry,
+            registry_annotated_b64= registry_annotated_b64,
+            registry_text=     registry_text,
         )
 
         self._log_state(state)
@@ -233,6 +300,7 @@ class PerceptionAgent(BaseAgent):
         print(
             f"[perception] {engine} | src={state.screenshot_source} | "
             f"elements={state.element_count} | ocr_words={len(state.ocr_result.words) if state.ocr_result else 0} | "
+            f"som={len(state.element_registry)} | "
             f"{stable} | {state.duration_ms:.0f}ms"
         )
         if state.all_text:
