@@ -140,6 +140,14 @@ class VerificationAgent(BaseAgent):
             diff = self._analyzer.pixel_diff(pre.screenshot_np, post.screenshot_np)
         evidence.append(f"pixel_diff={diff:.3f}")
 
+        print("\n========== VERIFY ==========")
+        print("SUBGOAL:", current_subgoal)
+        print("ACTION :", action_report.action_type)
+        print("SUCCESS:", action_report.success)
+        print("DIFF   :", f"{diff:.3f}")
+        print("OCR    :", post.all_text[:150])
+        print("============================\n")
+
         # ── Detect if this is a steps-mode subgoal ────────────────────────
         # A steps-mode subgoal is a free-form NLP sentence (contains spaces).
         # Named subgoals like "APP_LAUNCH" or "VERIFY_GAMEPLAY" never have spaces.

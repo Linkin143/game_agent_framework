@@ -38,7 +38,8 @@ try:
 except ImportError:
     pass
 
-from langchain_anthropic import ChatAnthropic
+from core.llm.llm_service import LiteLLMService
+from core.llm.model_registry import get_active_model
 
 from config.capabilities import get_driver
 from core.screen_capture     import ScreenCapturer
@@ -87,13 +88,14 @@ def build_framework(driver, app_package: str = "") -> dict:
     — zero cross-game leakage.
     """
     # ── LLM (shared across all agents) ───────────────────────────────────
-    llm = ChatAnthropic(
-        model=        os.getenv("LLM_MODEL", "claude-sonnet-4-6"),
-        api_key=      os.getenv("ANTHROPIC_API_KEY", ""),
-        max_tokens=   int(os.getenv("LLM_MAX_TOKENS", "1024")),
-        temperature=  float(os.getenv("LLM_TEMPERATURE", "0.1")),
-    )
+    llm = LiteLLMService(
+    model=get_active_model(),
+    max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1024")),
+    temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
+)
 
+    print(f"[run_game] Active Model: {get_active_model()}")
+    
     device_serial = os.getenv("DEVICE_UDID", "93b3d10f71da")
 
     # ── Load game-specific skill + subgoal config ─────────────────────────

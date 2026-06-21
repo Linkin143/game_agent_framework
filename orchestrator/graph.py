@@ -183,6 +183,12 @@ class GameOrchestrator:
         print(f"[orchestrator] SENSE | iter={state['iteration']} | "
               f"{mode_tag} | stuck={state['stuck_count']}")
         perception = self._pa.sense(wait_for_stable=True)
+        print("\n========== PERCEPTION ==========")
+        print("ENGINE :", perception.rendering_engine)
+        print("OCR    :", perception.all_text[:200])
+        print("XML    :", perception.element_count)
+        print("SOM    :", len(perception.element_registry))
+        print("================================")
         state["perception"]     = perception
         state["pre_perception"] = perception
         state["iteration"]      = state.get("iteration", 0) + 1
@@ -250,6 +256,14 @@ class GameOrchestrator:
             )
 
         state["action_report"] = report
+
+        print("\n========== ACTION ==========")
+        print("TYPE    :", report.action_type)
+        print("SUCCESS :", report.success)
+        print("TIER    :", report.tier_used)
+        print("METHOD  :", report.method)
+        print("COORDS  :", report.coordinates)
+        print("============================")
 
         # Log action
         log_entry = {

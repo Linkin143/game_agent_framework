@@ -712,6 +712,11 @@ class DecisionAgent(BaseAgent):
 
     def _parse_plan(self, raw: dict, p: PerceptionState) -> DecisionPlan:
         """Parse LLM response dict into DecisionPlan."""
+
+        print("\n========== RAW GPT JSON ==========")
+        print(json.dumps(raw, indent=2))
+        print("==================================\n")
+
         locators        = raw.get("locators", []) or []
         fallback_bounds = raw.get("fallback_bounds", {}) or {}
 

@@ -14,8 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Any
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
@@ -33,7 +33,7 @@ class BaseAgent:
 
     def __init__(
         self,
-        llm:        ChatAnthropic,
+        llm: Any,
         skill_file: Optional[str] = None,
     ) -> None:
         self._llm   = llm
