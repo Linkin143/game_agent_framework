@@ -13,7 +13,7 @@
   "steps": [
     "Launch the Netflix App",
     "Wait 5 seconds for the choose your profile screen to load completely",
-    "Tap 'Akash' profile",
+    "Tap \"Akash\" profile",
     "Wait 5 seconds for the Netflix home screen to load completely",
     "Tap the 'Search' icon from the bottom navigation menu",
     "Wait 2 seconds for the search input field to become visible",
