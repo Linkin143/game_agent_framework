@@ -1,0 +1,24 @@
+{
+  "comment": [
+    "Netflix App — STEPS MODE goal file.",
+    "",
+    "STEPS MODE: search and verify a title in Netflix.",
+    "These steps are worded to help StepIntentParser, Element Registry, and Set-of-Mark grounding resolve the correct visual target.",
+    "",
+    "run_game.py → Appium + Vision Model"
+  ],
+  "mode": "steps",
+  "goal": "Search for title 'Bloons TDSix' in Netflix App and verify search results",
+  "app_package": "com.netflix.mediaclient",
+  "steps": [
+    "Launch the Netflix App",
+    "Wait 5 seconds for the choose your profile screen to load completely",
+    "Tap 'Akash' profile",
+    "Wait 5 seconds for the Netflix home screen to load completely",
+    "Tap the 'Search' icon from the bottom navigation menu",
+    "Wait 2 seconds for the search input field to become visible",
+    "Type 'Bloons TDSix' in the search input field",
+    "Wait for 2 seconds to search results to populate",
+    "Verify that a search result containing the title 'Bloons TDSix' is displayed"
+  ]
+}
