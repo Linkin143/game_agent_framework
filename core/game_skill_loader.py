@@ -9,19 +9,16 @@
 #       01_navigation.md        ← how to navigate from launch → gameplay
 #       02_gameplay_mechanics.md← game rules, HUD keywords, tower/unit names
 #       03_gameplay_guide.md    ← VLM gameplay guide: strategy, visuals, decisions
-#       subgoal_config.json     ← per-game subgoal order + confirm/exclude rules
 #       ...                     ← any additional .md files in sort order
 #
 # Usage:
 #   from core.game_skill_loader import GameSkillLoader
 #   skill_text    = GameSkillLoader.load("com.netflix.NGP.BloonsTDSix")
-#   subgoal_cfg   = GameSkillLoader.load_subgoal_config("com.netflix.NGP.BloonsTDSix")
 #   metadata      = GameSkillLoader.get_info("com.netflix.NGP.BloonsTDSix")
 # =============================================================================
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Optional
 
@@ -123,43 +120,6 @@ class GameSkillLoader:
         return combined
 
     @classmethod
-    def load_subgoal_config(cls, app_package: str) -> dict:
-        """
-        Load the per-game ``subgoal_config.json`` for ``app_package``.
-
-        Returns a dict with keys:
-            subgoal_order         : list[str]  — ordered subgoal names
-            subgoal_confirmations : dict       — per-subgoal require_any/exclude_if
-
-        Returns an empty dict ``{}`` if no config file exists, so callers can
-        always fall back to the hardcoded generic subgoal list gracefully.
-        """
-        if not app_package:
-            return {}
-
-        skill_dir = cls._find_skill_dir(app_package)
-        if skill_dir is None:
-            return {}
-
-        config_path = skill_dir / "subgoal_config.json"
-        if not config_path.exists():
-            print(f"[game_skill_loader] No subgoal_config.json for: {app_package}")
-            return {}
-
-        try:
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            order = data.get("subgoal_order", [])
-            confirmations = data.get("subgoal_confirmations", {})
-            print(
-                f"[game_skill_loader] ✅ Loaded subgoal config for '{app_package}' "
-                f"— {len(order)} subgoals: {order}"
-            )
-            return {"subgoal_order": order, "subgoal_confirmations": confirmations}
-        except Exception as exc:
-            print(f"[game_skill_loader] ⚠ Failed to parse subgoal_config.json: {exc}")
-            return {}
-
-    @classmethod
     def get_info(cls, app_package: str) -> dict:
         """
         Return metadata about the available game skill for `app_package`.
@@ -172,16 +132,13 @@ class GameSkillLoader:
                 "skill_found":      False,
                 "skill_dir":        str(GAME_SKILLS_DIR / app_package),
                 "skill_files":      [],
-                "subgoal_config":   False,
             }
         files = sorted(skill_dir.glob("*.md"))
-        has_config = (skill_dir / "subgoal_config.json").exists()
         return {
             "app_package":      app_package,
             "skill_found":      True,
             "skill_dir":        str(skill_dir),
             "skill_files":      [f.name for f in files],
-            "subgoal_config":   has_config,
         }
 
     @classmethod

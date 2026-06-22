@@ -416,6 +416,14 @@ class ActionExecutor:
         except Exception as e:
             return ActionResult(success=False, method="hide_keyboard", error=str(e))
 
+    def press_enter(self) -> ActionResult:
+        try:
+            self._driver.execute_script("mobile: pressKey", {"keycode": 66})
+            self._wait()
+            return ActionResult(success=True, method="press_enter")
+        except Exception as e:
+            return ActionResult(success=False, method="press_enter", error=str(e))
+
     def wait(self, seconds: float) -> ActionResult:
         time.sleep(seconds)
         return ActionResult(success=True, method=f"wait({seconds}s)")
@@ -440,16 +448,47 @@ class ActionExecutor:
                 el = self._driver.find_element(AppiumBy.ID, element_value)
             elif element_locator_type == "xpath":
                 el = self._driver.find_element(AppiumBy.XPATH, element_value)
+            elif element_locator_type == "uiautomator":
+                el = self._driver.find_element(AppiumBy.ANDROID_UIAUTOMATOR, element_value)
             else:
                 el = self._driver.find_element(AppiumBy.XPATH,
                                                 f'//*[@text="{element_value}"]')
+            try:
+                el.click()
+            except Exception:
+                pass
             if clear_first:
-                el.clear()
+                try:
+                    el.clear()
+                except Exception:
+                    pass
             el.send_keys(text)
             self._wait()
             return ActionResult(success=True, method="type_text")
         except Exception as e:
             return ActionResult(success=False, method="type_text", error=str(e))
+
+    def type_text_focused(self, text: str, clear_first: bool = True) -> ActionResult:
+        """Type into the currently focused input, with ADB fallback."""
+        try:
+            el = self._driver.switch_to.active_element
+            if clear_first:
+                try:
+                    el.clear()
+                except Exception:
+                    pass
+            el.send_keys(text)
+            self._wait()
+            return ActionResult(success=True, method="type_text_focused")
+        except Exception:
+            try:
+                adb_text = self._encode_adb_input_text(text)
+                cmd = self._adb_prefix + ["shell", "input", "text", adb_text]
+                subprocess.run(cmd, capture_output=True, timeout=5.0)
+                self._wait()
+                return ActionResult(success=True, method="adb_input_text")
+            except Exception as e:
+                return ActionResult(success=False, method="type_text_focused", error=str(e))
 
     # -------------------------------------------------------------------------
     # Private
@@ -457,3 +496,12 @@ class ActionExecutor:
 
     def _wait(self) -> None:
         time.sleep(self._post_action_wait)
+
+    @staticmethod
+    def _encode_adb_input_text(text: str) -> str:
+        """
+        Encode text for `adb shell input text`.
+        """
+        value = text.replace(" ", "%s")
+        value = re.sub(r'([&|<>;$`()"\\])', r"\\\1", value)
+        return value

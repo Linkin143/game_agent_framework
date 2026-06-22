@@ -4,11 +4,11 @@
 # The central state machine that coordinates all 5 specialist agents.
 #
 # Supports two execution modes:
-#   oneliner  — AI decomposes a single goal into per-game subgoals defined in
-#               subgoal_config.json (8 stages for Bloons TD6, etc.)
+#   oneliner  — Goal-only mode. The loop reasons directly from the live screen
+#               and the overall goal, with no synthetic subgoal state machine.
 #   steps     — Caller supplies an ordered list of NLP step strings; each step
 #               is treated as its own mini-subgoal. GOAL_ACHIEVED fires only
-#               when the LAST step completes. (FIX-3)
+#               when the LAST step completes.
 # =============================================================================
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from langgraph.graph import StateGraph, END
 from agents.perception_agent import PerceptionAgent, PerceptionState
 from agents.decision_agent import DecisionAgent
 from agents.action_agent import ActionAgent
-from agents.verification_agent import VerificationAgent, SUBGOAL_ORDER
+from agents.verification_agent import VerificationAgent
 from agents.memory_agent import MemoryAgent
 from core.action_executor import ActionExecutor
 from core.step_parser import parse_step, StepIntent
@@ -38,11 +38,13 @@ class GameAgentState(TypedDict):
     steps:             list         # NLP step strings (steps mode only)
     current_step_index: int         # zero-based index into steps[]
 
-    # SubGoal tracking (oneliner mode OR step text in steps mode)
+    # Step tracking and current focus text
     current_subgoal:   str
     subgoal_index:     int
     stuck_count:       int
     retry_count:       int
+    retry_reason:      str
+    force_fallback:    bool
     fallback_level:    int
 
     # Perception
@@ -80,8 +82,8 @@ class GameOrchestrator:
     Two execution modes
     ───────────────────
     oneliner
-        Pass only ``goal`` and ``app_package``.  The AI decomposes the goal
-        into ordered subgoals driven by the per-game subgoal_config.json.
+        Pass only ``goal`` and ``app_package``. The AI navigates in goal-only
+        mode from the live screen plus the overall goal.
 
     steps
         Pass ``goal``, ``app_package``, AND a non-empty ``steps`` list.
@@ -100,6 +102,9 @@ class GameOrchestrator:
 
     MAX_ITERATIONS = 60   # raised from 40 — steps mode can have many steps
     MAX_STUCK      = 3
+    MAX_RETRY_PER_SUBGOAL = 2
+    MAX_BLOCKING_RETRIES  = 2
+    MAX_HARD_FAILURE_RETRIES = 1
     MAX_FALLBACK   = 5
 
     def __init__(
@@ -177,7 +182,7 @@ class GameOrchestrator:
             f"step {state.get('current_step_index', 0)+1}/"
             f"{len(state.get('steps', []))}"
             if state.get("mode") == "steps" else
-            f"subgoal={state['current_subgoal']}"
+            f"goal='{state['goal'][:50]}'"
         )
         print(f"\n{'─'*60}")
         print(f"[orchestrator] SENSE | iter={state['iteration']} | "
@@ -232,7 +237,7 @@ class GameOrchestrator:
         # Fires on iteration 1 when:
         #   • oneliner mode: current_subgoal == "APP_LAUNCH"
         #   • steps mode:    first step mentions "launch" (step_index==0, iter<=1)
-        is_launch_step = self._is_app_launch_step(state)
+        is_launch_step = self._should_activate_app(state)
         if is_launch_step:
             print(f"[orchestrator] APP_LAUNCH: activating {state['app_package']}")
             r = self._exe.activate_app(state["app_package"])
@@ -271,6 +276,8 @@ class GameOrchestrator:
             "subgoal":  state["current_subgoal"],
             "action":   plan.action_type if plan else "unknown",
             "target":   (plan.target_description[:40] if plan else ""),
+            "observed_screen": (getattr(plan, "observed_screen", "") if plan else ""),
+            "expected_screen": (getattr(plan, "expected_next_screen", "") if plan else ""),
             "tier":     report.tier_used,
             "success":  report.success,
         }
@@ -310,6 +317,7 @@ class GameOrchestrator:
             pre=               pre or post,
             post=              post,
             action_report=     report,
+            decision_plan=     state.get("decision_plan"),
             current_subgoal=   state["current_subgoal"],
             goal=              state["goal"],
             mode=              mode,
@@ -328,7 +336,7 @@ class GameOrchestrator:
             state["goal_achieved"] = True
             return state
 
-        if result.subgoal_complete:
+        if mode == "steps" and result.subgoal_complete:
             if mode == "steps":
                 # STEPS MODE (FIX-3): advance step index, not SUBGOAL_ORDER
                 new_index = step_index + 1
@@ -343,36 +351,17 @@ class GameOrchestrator:
                     state["current_step_index"] = new_index
                     state["current_subgoal"]    = next_step
                     state["subgoal_index"]       = new_index
-                    state["stuck_count"]         = 0
-                    state["retry_count"]         = 0
+                    self._reset_retry_state(state, reset_fallback=True)
                     self._record_action(state, report)
-            else:
-                # ONELINER MODE: advance via per-game subgoal list
-                if result.next_subgoal:
-                    print(f"[orchestrator] ✓ SubGoal '{state['current_subgoal']}' COMPLETE → "
-                          f"next: '{result.next_subgoal}'")
-                    state["current_subgoal"] = result.next_subgoal
-                    state["subgoal_index"]   = (
-                        SUBGOAL_ORDER.index(result.next_subgoal)
-                        if result.next_subgoal in SUBGOAL_ORDER else 0
-                    )
-                    state["stuck_count"]  = 0
-                    state["retry_count"]  = 0
-                    self._record_action(state, report)
-                else:
-                    # next_subgoal=None in oneliner means it was the last one
-                    # (VerificationAgent already fires GOAL_ACHIEVED in that case,
-                    # but guard here just in case)
-                    state["goal_achieved"] = True
-
+        elif result.verdict == "BLOCKING_ELEMENT":
+            self._apply_retry_policy(state, result, report, failure_kind="blocking")
         elif result.verdict == "ACTION_FAILED":
-            state["stuck_count"] = state.get("stuck_count", 0) + 1
-            state["retry_count"] = state.get("retry_count", 0) + 1
-            print(f"[orchestrator] Action failed (stuck={state['stuck_count']})")
+            self._apply_retry_policy(state, result, report, failure_kind="action_failed")
 
         else:
-            state["stuck_count"] = 0
-            state["retry_count"] = 0
+            self._reset_retry_state(state, reset_fallback=True)
+            if report.success:
+                self._record_action(state, report)
 
         return state
 
@@ -380,7 +369,7 @@ class GameOrchestrator:
         """FALLBACK: Progressive recovery when stuck."""
         level = state.get("fallback_level", 0) + 1
         state["fallback_level"] = level
-        state["stuck_count"]    = 0
+        self._reset_retry_state(state, reset_fallback=False)
         print(f"[orchestrator] ⚠ FALLBACK level {level}")
 
         if level == 1:
@@ -416,7 +405,7 @@ class GameOrchestrator:
                 state["current_step_index"] = 0
                 state["current_subgoal"]    = state["steps"][0]
             else:
-                state["current_subgoal"]  = "APP_LAUNCH"
+                state["current_subgoal"]  = state["goal"]
                 state["subgoal_index"]    = 0
             state["use_replay"] = False
 
@@ -454,7 +443,7 @@ class GameOrchestrator:
             print(f"  Steps completed: {si}/{len(steps)}")
             print(f"  Last step: {steps[si][:60] if si < len(steps) else '(all done)'}")
         else:
-            print(f"  Last subgoal: {state.get('current_subgoal','?')}")
+            print(f"  Goal focus: {state.get('goal','?')[:80]}")
         print(f"  Actions taken: {len(state.get('action_log',[]))}")
         print(f"{'═'*60}\n")
         return state
@@ -469,6 +458,10 @@ class GameOrchestrator:
             return "done"
         if state.get("iteration", 0) >= state.get("max_iterations", self.MAX_ITERATIONS):
             return "done"
+        if state.get("force_fallback"):
+            if state.get("fallback_level", 0) >= self.MAX_FALLBACK:
+                return "done"
+            return "fallback"
         if state.get("stuck_count", 0) >= self.MAX_STUCK:
             if state.get("fallback_level", 0) >= self.MAX_FALLBACK:
                 return "done"
@@ -492,8 +485,8 @@ class GameOrchestrator:
         steps = steps or []
         mode  = "steps" if steps else "oneliner"
 
-        # Starting subgoal: first step text (steps mode) or "APP_LAUNCH" (oneliner)
-        initial_subgoal     = steps[0] if steps else "APP_LAUNCH"
+        # Starting focus: first step text (steps mode) or the overall goal (oneliner)
+        initial_subgoal     = steps[0] if steps else goal
         initial_step_index  = 0
 
         initial_state: GameAgentState = {
@@ -508,6 +501,8 @@ class GameOrchestrator:
             "subgoal_index":     0,
             "stuck_count":       0,
             "retry_count":       0,
+            "retry_reason":      "",
+            "force_fallback":    False,
             "fallback_level":    0,
             # Perception / plan / action / verification
             "perception":        None,
@@ -538,25 +533,30 @@ class GameOrchestrator:
 
     # ─── Internal Helpers ─────────────────────────────────────────────────────
 
-    def _is_app_launch_step(self, state: GameAgentState) -> bool:
+    def _should_activate_app(self, state: GameAgentState) -> bool:
         """
-        Detect whether the current execution context is an app-launch action.
+        Decide whether we should activate the target app before reasoning.
 
-        Fires when:
-          • oneliner mode AND current_subgoal == "APP_LAUNCH"  AND iteration <= 1
-          • steps mode  AND step_index == 0                    AND step text
-            contains "launch" (case-insensitive)               AND iteration <= 1
+        In steps mode we keep the explicit first-step launch behavior.
+        In oneliner mode we do not create an APP_LAUNCH subgoal; instead we
+        activate the app only on the first iteration when the target package is
+        not already foregrounded.
         """
         if state.get("iteration", 0) > 1:
             return False
         subgoal = state.get("current_subgoal", "")
         mode    = state.get("mode", "oneliner")
         if mode == "steps":
+            step_text = subgoal.lower()
             return (
                 state.get("current_step_index", 0) == 0
-                and "launch" in subgoal.lower()
+                and any(word in step_text for word in ("launch", "open", "start app", "start the game"))
             )
-        return subgoal == "APP_LAUNCH"
+        try:
+            current_pkg = self._exe.get_current_package()
+        except Exception:
+            current_pkg = ""
+        return bool(state.get("app_package")) and current_pkg != state.get("app_package")
 
     def _check_fixA_gameplay(self, state: GameAgentState, plan, report) -> None:
         """
@@ -620,6 +620,8 @@ class GameOrchestrator:
                 "step":        len(state.get("action_log", [])),
                 "subgoal":     state["current_subgoal"],
                 "action_type": plan.action_type,
+                "observed_screen": getattr(plan, "observed_screen", ""),
+                "expected_screen": getattr(plan, "expected_next_screen", ""),
                 "locator":     locs[0] if locs else {
                     "type":  "coords",
                     "value": f"{report.coordinates['x']},{report.coordinates['y']}",
@@ -628,3 +630,63 @@ class GameOrchestrator:
                 "success": True,
             }
             state["action_log"] = state.get("action_log", []) + [entry]
+
+    def _reset_retry_state(self, state: GameAgentState, reset_fallback: bool) -> None:
+        """Clear retry bookkeeping after progress or after entering fallback."""
+        state["stuck_count"] = 0
+        state["retry_count"] = 0
+        state["retry_reason"] = ""
+        state["force_fallback"] = False
+        if reset_fallback:
+            state["fallback_level"] = 0
+
+    def _apply_retry_policy(
+        self,
+        state: GameAgentState,
+        result,
+        report,
+        failure_kind: str,
+    ) -> None:
+        """Apply bounded retry policy before escalating to fallback."""
+        retry_count = state.get("retry_count", 0) + 1
+        stuck_count = state.get("stuck_count", 0) + 1
+        state["retry_count"] = retry_count
+        state["stuck_count"] = stuck_count
+
+        reason = (
+            getattr(report, "method", "")
+            or getattr(result, "verdict", "")
+            or failure_kind
+        )
+        state["retry_reason"] = reason
+
+        hard_failure = (
+            failure_kind == "action_failed"
+            and (
+                getattr(report, "method", "") in {"all_tiers_exhausted", "no_plan"}
+                or getattr(state.get("decision_plan"), "goal_status", "") == "blocked"
+            )
+        )
+
+        retry_limit = (
+            self.MAX_HARD_FAILURE_RETRIES if hard_failure
+            else self.MAX_BLOCKING_RETRIES if failure_kind == "blocking"
+            else self.MAX_RETRY_PER_SUBGOAL
+        )
+        state["force_fallback"] = retry_count >= retry_limit
+
+        if failure_kind == "blocking":
+            print(
+                f"[orchestrator] Blocking screen persists "
+                f"(retry={retry_count}/{retry_limit}, stuck={stuck_count})"
+            )
+        elif hard_failure:
+            print(
+                f"[orchestrator] Hard failure '{reason}' "
+                f"(retry={retry_count}/{retry_limit}) -> fallback"
+            )
+        else:
+            print(
+                f"[orchestrator] Action failed "
+                f"(retry={retry_count}/{retry_limit}, stuck={stuck_count}, reason={reason})"
+            )

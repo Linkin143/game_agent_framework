@@ -47,6 +47,7 @@ class StepIntent:
         bits = [f"action={self.action}"]
         if self.target_text:  bits.append(f"text='{self.target_text}'")
         if self.target_desc:  bits.append(f"desc='{self.target_desc[:40]}'")
+        if self.type_text:    bits.append(f"type='{self.type_text[:40]}'")
         if self.repeat != 1:  bits.append(f"repeat={self.repeat}")
         if self.interval_s:   bits.append(f"interval={self.interval_s}s")
         if self.wait_seconds: bits.append(f"wait={self.wait_seconds}s")
@@ -71,7 +72,7 @@ _ACTION_VERBS = [
     (("wait", "pause", "sleep"),                          "wait"),
     (("swipe", "scroll", "drag the screen"),             "swipe"),
     (("drag", "place", "drop"),                          "drag"),
-    (("type", "enter text", "input"),                    "type"),
+    (("type", "enter text", "input text", "fill", "search for"), "type"),
     (("back", "go back", "press back"),                  "back"),
     (("dismiss", "skip", "cancel"),                      "tap"),   # dismiss = tap a close button
     (("tap", "click", "press", "select", "choose", "hit", "touch"), "tap"),
@@ -161,6 +162,13 @@ def parse_step(step: str) -> StepIntent:
         target_text = candidate
         break
 
+    # Generic text-entry detection:
+    #   Type 'Foo' in the search field
+    #   Enter 'Foo' in the search input field
+    #   Input 'Foo' into username
+    if _looks_like_type_step(lower, bool(target_text)):
+        action = "type"
+
     # ── repeat count ───────────────────────────────────────────────────────
     repeat = 1
     rm = _REPEAT_DIGIT_RE.search(raw)
@@ -201,7 +209,10 @@ def parse_step(step: str) -> StepIntent:
         type_text = target_text
 
     # ── target description (cleaned full text, used for SoM / VLM matching) ─
-    target_desc = _build_target_desc(raw, target_text)
+    if action == "type":
+        target_desc = _build_input_target_desc(raw, target_text)
+    else:
+        target_desc = _build_target_desc(raw, target_text)
 
     return StepIntent(
         raw=          raw,
@@ -251,3 +262,47 @@ def _build_target_desc(raw: str, target_text: Optional[str]) -> str:
     if not desc and target_text:
         desc = target_text
     return desc
+
+
+def _looks_like_type_step(lower: str, has_quote: bool) -> bool:
+    """Return True when the step is clearly asking for text entry."""
+    if not has_quote:
+        return False
+    text_verbs = ("type ", "enter ", "input ", "fill ")
+    text_context = ("search", "input", "field", "textbox", "text box", "edittext", "edit text", "username", "email", "password")
+    return any(v in lower for v in text_verbs) or any(c in lower for c in text_context)
+
+
+def _build_input_target_desc(raw: str, target_text: Optional[str]) -> str:
+    """
+    Produce a concise input-field description for type steps.
+
+    Examples:
+      Type 'Bloons TD6' in the search input field
+        -> search input field
+      Enter 'abc@example.com' into email field
+        -> email field
+    """
+    desc = raw
+    if target_text:
+        desc = re.sub(re.escape(target_text), "", desc, flags=re.IGNORECASE)
+        desc = re.sub(r"['\"\u2018\u2019\u201c\u201d]", "", desc)
+
+    m = re.search(
+        r"\b(?:in|into|on)\s+(?:the\s+|a\s+|an\s+)?(.+)$",
+        desc,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        desc = m.group(1)
+    else:
+        desc = re.sub(
+            r"^\s*(type|enter|input|fill)\s+",
+            "",
+            desc,
+            flags=re.IGNORECASE,
+        )
+
+    desc = re.sub(r"\b(with|using|and then|then)\b.*$", "", desc, flags=re.IGNORECASE)
+    desc = desc.strip(" .,'\"")
+    return desc or "focused input field"

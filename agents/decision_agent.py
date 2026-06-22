@@ -15,6 +15,7 @@ from typing import Optional
 
 from agents.base_agent import BaseAgent
 from agents.perception_agent import PerceptionState
+from core.screen_semantics import extract_keywords, summarize_perception
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
@@ -79,6 +80,17 @@ class DecisionPlan:
 
     # Step-anchored verification hint: tap is confirmed once this text appears.
     wait_after_text:     Optional[str] = None
+
+    # Shared Decision → Verification contract.
+    observed_screen:     str = ""
+    expected_next_screen: str = ""
+    expected_outcome:    str = ""
+    expected_keywords:   list[str] = field(default_factory=list)
+    goal_status:         str = "on_path"   # on_path | ahead | at_goal | blocked
+    success_condition:   str = ""
+    expected_screen_type: str = ""
+    goal_progress_hint:  str = ""
+    forbidden_outcomes:  list[str] = field(default_factory=list)
 
 
 
@@ -162,7 +174,7 @@ class DecisionAgent(BaseAgent):
                       f"action={anchored.action_type} "
                       f"target='{anchored.target_description[:40]}' "
                       f"conf={anchored.confidence:.2f}")
-                return anchored
+                return self._finalize_plan(anchored, perception, current_subgoal)
 
         # Step 1: Run heuristic to generate a HINT (not a bypass)
         heuristic_hint: Optional[DecisionPlan] = self._fast_heuristic(perception, current_subgoal)
@@ -237,10 +249,18 @@ class DecisionAgent(BaseAgent):
         if result.get("llm_failed"):
             if heuristic_hint:
                 print(f"[decision_agent] LLM failed — using heuristic hint as fallback")
-                return heuristic_hint
-            return self._fallback_plan(perception, current_subgoal)
+                return self._finalize_plan(heuristic_hint, perception, current_subgoal)
+            return self._finalize_plan(
+                self._fallback_plan(perception, current_subgoal),
+                perception,
+                current_subgoal,
+            )
 
-        plan = self._parse_plan(result, perception)
+        plan = self._finalize_plan(
+            self._parse_plan(result, perception),
+            perception,
+            current_subgoal,
+        )
         print(f"[decision_agent] VLM decision: action={plan.action_type} "
               f"target='{plan.target_description[:40]}' conf={plan.confidence:.2f}")
         return plan
@@ -283,6 +303,8 @@ class DecisionAgent(BaseAgent):
         interval_s   = float(getattr(step_intent, "interval_s", 0.0) or 0.0)
         wait_after   = getattr(step_intent, "wait_after", None)
         wait_seconds = getattr(step_intent, "wait_seconds", None)
+        type_text    = getattr(step_intent, "type_text", None)
+        target_desc  = getattr(step_intent, "target_desc", "") or "focused input field"
         wait_after_text = (wait_after or {}).get("expect_text") if wait_after else None
 
         # ── Anchor A: explicit wait ──────────────────────────────────────
@@ -308,7 +330,28 @@ class DecisionAgent(BaseAgent):
                 wait_after_text=        wait_after_text,
             )
 
-        # ── Anchor B: exact-text element anchor (the heart of accuracy) ──
+        # ── Anchor B: deterministic text entry into an input field ──────────
+        if action == "type" and type_text:
+            type_locators, type_bounds, type_reason = self._find_input_target(p, target_desc)
+            return DecisionPlan(
+                screen_assessment=      f"Step-anchored type '{type_text[:30]}'",
+                subgoal_progress=       subgoal,
+                rendering_engine=       p.rendering_engine,
+                blocking_element=       None,
+                action_type=            "type",
+                target_description=     target_desc,
+                locators=               type_locators,
+                fallback_bounds=        type_bounds,
+                type_payload=           type_text,
+                template_name=          "",
+                confidence=             0.94 if type_locators or type_bounds else 0.88,
+                reasoning=              type_reason,
+                subgoal_complete=       False,
+                suggested_next_subgoal= None,
+                wait_after_text=        wait_after_text,
+            )
+
+        # ── Anchor C: exact-text element anchor (the heart of accuracy) ──
         if not target_text:
             return None
 
@@ -345,6 +388,66 @@ class DecisionAgent(BaseAgent):
             interval_s=             interval_s,
             wait_after_text=        wait_after_text,
         )
+
+    def _find_input_target(
+        self,
+        p: PerceptionState,
+        target_desc: str,
+    ) -> tuple[list[dict], dict, str]:
+        """
+        Find the best visible input/search field for deterministic text entry.
+        """
+        desc = (target_desc or "").strip()
+        want_tokens = [
+            tok for tok in extract_keywords(desc, limit=6)
+            if tok not in {"THE", "A", "AN", "FIELD", "INPUT"}
+        ]
+        best = None
+        best_score = -1
+
+        for el in p.selector_map:
+            class_name = (el.get("class") or "")
+            text = (el.get("text") or "")
+            acc_id = (el.get("acc_id") or "")
+            res_id = (el.get("res_id") or "")
+            blob = " ".join([class_name, text, acc_id, res_id]).upper()
+            is_input = any(key in blob for key in (
+                "EDITTEXT", "TEXTINPUT", "SEARCH", "INPUT", "TEXTBOX", "AUTOCOMPLETE",
+            ))
+            if not is_input:
+                continue
+
+            score = 2
+            for tok in want_tokens:
+                if tok in blob:
+                    score += 2
+            if "SEARCH" in blob and "SEARCH" in " ".join(want_tokens):
+                score += 2
+            if el.get("enabled", True):
+                score += 1
+            if el.get("clickable", False):
+                score += 1
+
+            if score > best_score:
+                best = el
+                best_score = score
+
+        if best is None:
+            return [], {}, f"No explicit input target found for '{desc}' — type into focused field."
+
+        locators: list[dict] = []
+        if best.get("res_id"):
+            locators.append({"type": "resource_id", "value": best["res_id"]})
+        if best.get("acc_id"):
+            locators.append({"type": "accessibility_id", "value": best["acc_id"]})
+        if best.get("text"):
+            locators.append({"type": "text", "value": best["text"]})
+        bounds = best.get("bounds", {}) or {}
+        if bounds.get("cx") and bounds.get("cy"):
+            locators.append({"type": "coords", "value": f"{bounds['cx']},{bounds['cy']}"})
+
+        label = best.get("text") or best.get("acc_id") or best.get("res_id") or desc
+        return locators, bounds, f"Input target '{label}' matched from current UI for type action."
 
     # -------------------------------------------------------------------------
     # Private: Fast Heuristics (no LLM call)
@@ -638,10 +741,12 @@ class DecisionAgent(BaseAgent):
                 f"    actually present and correctly identified. Override if wrong.\n"
             )
 
+        workflow_block = ""
+
         text_ctx = (
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"OVERALL GOAL    : \"{goal}\"\n"
-            f"CURRENT SUBGOAL : {subgoal}\n"
+            f"CURRENT FOCUS   : {subgoal}\n"
             f"RENDERING ENGINE: {p.rendering_engine}  |  STUCK: {stuck}\n"
             f"SCREEN SIZE     : {p.screen_w}×{p.screen_h}  |  source={p.screenshot_source}\n"
             f"ANIMATION SCORE : {p.animation_score:.3f}  |  stable={p.is_stable}\n"
@@ -659,6 +764,7 @@ class DecisionAgent(BaseAgent):
             f"{ocr_block}\n"
             f"{som_block}\n"
             f"{hint_block}\n"
+            f"{workflow_block}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"YOUR TASK — Cross-reference screenshot + XML + OCR then decide:\n"
             f"  1. If XML has a visible [TAP] element → use accessibility_id or text locator\n"
@@ -690,6 +796,20 @@ class DecisionAgent(BaseAgent):
             f"  W3. If subgoal says 'wait' (no explicit duration) AND OCR shows loading:\n"
             f"      → action_type='wait',  type_payload='3.0'\n"
             f"  W4. type_payload for wait MUST be a plain string number, e.g. '40.0', '3.0'\n\n"
+            f"SHARED CONTRACT WITH VERIFICATION AGENT:\n"
+            f"  Return these extra fields in JSON so verification checks the SAME model:\n"
+            f"  - observed_screen      : short label of the current screen you see now\n"
+            f"  - expected_next_screen : short label of the screen expected AFTER success\n"
+            f"  - expected_outcome     : concise description of success condition\n"
+            f"  - expected_keywords    : 1-6 OCR/accessibility words expected after success\n"
+            f"  - goal_status          : 'on_path', 'ahead', 'at_goal', or 'blocked'\n"
+            f"  - success_condition    : one-line rule that makes this action count as success\n"
+            f"  - expected_screen_type : short class like MENU / DIALOG / ACTIVE_GAMEPLAY\n"
+            f"  - goal_progress_hint   : how success moves the overall goal forward\n"
+            f"  - forbidden_outcomes   : 0-4 words/screens that indicate wrong progress\n"
+            f"  If the screenshot already shows gameplay or a later screen than the\n"
+            f"  workflow hint, do NOT force the stale subgoal. Prefer verify/wait and\n"
+            f"  set goal_status='ahead' or 'at_goal'.\n\n"
             f"Return ONLY raw JSON — no markdown, no explanation."
         )
 
@@ -704,16 +824,19 @@ class DecisionAgent(BaseAgent):
     def _build_lean_content(self, p: PerceptionState, subgoal: str) -> str:
         """Minimal text prompt for LLM retry."""
         return (
-            f"SUBGOAL: {subgoal}\n"
+            f"FOCUS: {subgoal}\n"
             f"ENGINE: {p.rendering_engine}\n"
             f"OCR: {p.all_text[:200]}\n"
-            "Return JSON with action_type, locators, confidence, reasoning."
+            "Return JSON with action_type, locators, confidence, reasoning, "
+            "observed_screen, expected_next_screen, expected_outcome, expected_keywords, "
+            "goal_status, success_condition, expected_screen_type, goal_progress_hint, "
+            "forbidden_outcomes."
         )
 
     def _parse_plan(self, raw: dict, p: PerceptionState) -> DecisionPlan:
         """Parse LLM response dict into DecisionPlan."""
 
-        print("\n========== RAW GPT JSON ==========")
+        print("\n========== RAW PLAN JSON ==========")
         print(json.dumps(raw, indent=2))
         print("==================================\n")
 
@@ -775,6 +898,92 @@ class DecisionAgent(BaseAgent):
             plan.interval_s = float(raw.get("interval_s", 0.0) or 0.0)
         except (TypeError, ValueError):
             plan.interval_s = 0.0
+        plan.observed_screen = str(raw.get("observed_screen", "") or "")
+        plan.expected_next_screen = str(raw.get("expected_next_screen", "") or "")
+        plan.expected_outcome = str(raw.get("expected_outcome", "") or "")
+        raw_keywords = raw.get("expected_keywords", []) or []
+        if isinstance(raw_keywords, str):
+            raw_keywords = extract_keywords(raw_keywords, limit=6)
+        plan.expected_keywords = [str(x).upper() for x in raw_keywords if str(x).strip()][:6]
+        plan.goal_status = str(raw.get("goal_status", "on_path") or "on_path").lower()
+        plan.success_condition = str(raw.get("success_condition", "") or "")
+        plan.expected_screen_type = str(raw.get("expected_screen_type", "") or "")
+        plan.goal_progress_hint = str(raw.get("goal_progress_hint", "") or "")
+        raw_forbidden = raw.get("forbidden_outcomes", []) or []
+        if isinstance(raw_forbidden, str):
+            raw_forbidden = extract_keywords(raw_forbidden, limit=4)
+        plan.forbidden_outcomes = [str(x).upper() for x in raw_forbidden if str(x).strip()][:4]
+        return plan
+
+    def _finalize_plan(
+        self,
+        plan: DecisionPlan,
+        p: PerceptionState,
+        current_subgoal: str,
+    ) -> DecisionPlan:
+        summary = summarize_perception(p)
+        if not plan.observed_screen:
+            plan.observed_screen = summary.label
+
+        if not plan.expected_next_screen:
+            if summary.kind == "ACTIVE_GAMEPLAY" and current_subgoal != "ACTIVE_GAMEPLAY":
+                plan.expected_next_screen = "ACTIVE_GAMEPLAY"
+            elif current_subgoal:
+                plan.expected_next_screen = current_subgoal
+            else:
+                plan.expected_next_screen = summary.kind
+
+        if not plan.expected_outcome:
+            plan.expected_outcome = (
+                plan.reasoning
+                or plan.target_description
+                or f"Advance toward {plan.expected_next_screen}"
+            )
+
+        if not plan.expected_keywords:
+            plan.expected_keywords = extract_keywords(
+                plan.expected_next_screen,
+                plan.expected_outcome,
+                plan.target_description,
+                current_subgoal,
+                limit=6,
+            )
+
+        if not plan.goal_status or plan.goal_status == "unknown":
+            if summary.kind == "ACTIVE_GAMEPLAY" and current_subgoal not in {
+                "ACTIVE_GAMEPLAY", "VERIFY_GAMEPLAY", "START_GAMEPLAY", "VERIFY_PLAYBACK",
+            }:
+                plan.goal_status = "ahead"
+            else:
+                plan.goal_status = "on_path"
+
+        if not plan.success_condition:
+            plan.success_condition = (
+                plan.expected_outcome
+                or f"Reach or confirm {plan.expected_next_screen}"
+            )
+
+        if not plan.expected_screen_type:
+            plan.expected_screen_type = (
+                plan.expected_next_screen
+                if plan.expected_next_screen.isupper()
+                else summary.kind
+            )
+
+        if not plan.goal_progress_hint:
+            plan.goal_progress_hint = (
+                current_subgoal
+                or plan.expected_outcome
+                or plan.expected_next_screen
+            )
+
+        if not plan.forbidden_outcomes:
+            plan.forbidden_outcomes = extract_keywords(
+                plan.blocking_element or "",
+                "ERROR CRASH FAILED RETRY CANCEL LOGIN SIGN IN PURCHASE UPDATE PERMISSION",
+                limit=4,
+            )
+
         return plan
 
 

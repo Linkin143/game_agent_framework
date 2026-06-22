@@ -99,19 +99,16 @@ def build_framework(driver, app_package: str = "") -> dict:
     device_serial = os.getenv("DEVICE_UDID", "93b3d10f71da")
 
     # ── Load game-specific skill + subgoal config ─────────────────────────
-    # GameSkillLoader.load()              → concatenated .md skill text
-    # GameSkillLoader.load_subgoal_config → per-game subgoal order + rules
-    # Both are loaded once here and threaded into the relevant agents.
-    # If no skill / config exists, agents degrade gracefully to generic logic.
+    # GameSkillLoader.load() → concatenated .md skill text
+    # Loaded once here and threaded into the relevant agents.
+    # If no skill exists, agents degrade gracefully to generic logic.
     # load_gameplay_skill() skips 01_navigation*.md files — navigation is
     # handled by VLM vision alone.  This prevents text-instruction bias where
     # the LLM pattern-matches nav script text instead of reading the screenshot.
     game_skill     = GameSkillLoader.load_gameplay_skill(app_package)
-    subgoal_config = GameSkillLoader.load_subgoal_config(app_package)
     skill_info     = GameSkillLoader.get_info(app_package)
     print(f"[run_game] Game skill: found={skill_info['skill_found']} "
           f"files={skill_info['skill_files']} "
-          f"subgoal_config={skill_info.get('subgoal_config', False)} "
           f"package={app_package}")
 
     # ── Core modules ─────────────────────────────────────────────────────
@@ -129,9 +126,9 @@ def build_framework(driver, app_package: str = "") -> dict:
     # DecisionAgent (TEST):     game_skill  → injected into every VLM call
     # ActionAgent   (ACT):      game_skill  → Tier 3 coordinate hints
     # VerificationAgent (VERIFY):
-    #   game_skill      → parses game-specific HUD keywords from .md
-    #   subgoal_config  → per-game subgoal order + require_any/exclude_if rules
-    #                     (FIX-1/FIX-2: prevents premature GOAL_ACHIEVED)
+    #   game_skill → parses game-specific HUD keywords from .md
+    #   oneliner mode verifies direct goal progress from live screen truth
+    #   steps mode verifies each supplied step explicitly
     perception_agent   = PerceptionAgent(capturer, ocr_engine, xml_extractor, image_analyzer, llm)
     decision_agent     = DecisionAgent(llm, game_skill=game_skill)
     action_agent       = ActionAgent(executor, image_analyzer, llm, game_skill=game_skill)
@@ -139,7 +136,6 @@ def build_framework(driver, app_package: str = "") -> dict:
         image_analyzer,
         llm,
         game_skill=     game_skill,
-        subgoal_config= subgoal_config,   # ← NEW: per-game subgoal rules
     )
     memory_agent       = MemoryAgent(llm)
 
