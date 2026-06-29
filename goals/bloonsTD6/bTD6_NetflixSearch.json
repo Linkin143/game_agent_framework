@@ -12,13 +12,11 @@
   "app_package": "com.netflix.mediaclient",
   "steps": [
     "Launch the Netflix App",
-    "Wait 3 seconds for the choose your profile screen to load completely",
+    "Wait 1 seconds for the choose your profile screen to load completely",
     "Tap \"Akash\" profile",
-    "Wait 3 seconds for the Netflix home screen to load completely",
+    "Wait 1 seconds for the Netflix home screen to load completely",
     "Tap the 'Search' icon from the bottom navigation menu",
-    "Wait 1 seconds",
     "Type 'Bloons TD6' in the search input field",
-    "Wait for 1 seconds",
-    "Verify 'Bloons TDS6' is displayed"
+    "Verify 'Bloons TD6' is displayed"
   ]
 }

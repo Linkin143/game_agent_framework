@@ -113,8 +113,8 @@ class GameSkillLoader:
         combined = "\n\n---\n\n".join(parts)
         mode = "gameplay-only" if skip_navigation else "all"
         print(
-            f"[game_skill_loader] ✅ Loaded {mode} skill for '{app_package}' "
-            f"— {len(md_files)} files [{', '.join(f.name for f in md_files)}], "
+            f"[game_skill_loader] Loaded {mode} skill for '{app_package}' "
+            f"- {len(md_files)} files [{', '.join(f.name for f in md_files)}], "
             f"{len(combined)} chars"
         )
         return combined

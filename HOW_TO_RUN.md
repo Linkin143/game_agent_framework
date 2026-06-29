@@ -78,7 +78,7 @@ python run_game.py "Launch Bloons TD6 and go to gameplay"
 python run_game.py "Play Subway Surfers"
 python run_game.py "Open Netflix and watch a movie"
 python run_game.py --file goals/bloons_td6_oneliner.json
-
+python run_game.py --file goals/bloons_td6.json
  python run_game.py --file goals/bloonsTD6/bTD6_NetflixSearch.json
 ```
 

@@ -1,117 +1,77 @@
-# Bloons TD6 — Gameplay Mechanics Skill
+# Bloons TD6 - Gameplay Mechanics Skill
 # Package: com.netflix.NGP.BloonsTDSix
 
-## Core Gameplay Loop
-1. **Place towers** on the map grass areas before/between rounds
-2. **Start round** by tapping the PLAY/START button (bottom-right or bottom HUD)
-3. **Bloons** travel along the track; towers auto-attack them
-4. **Earn cash** by popping bloons and completing rounds
-5. **Upgrade towers** between rounds to handle harder bloon types
-6. **Survive all rounds** without letting bloons escape (lose lives)
+## Purpose
+This file gives only the minimum game facts the generic framework needs while
+inside active gameplay. Keep it simple. Do not turn this into a full strategy
+guide.
 
----
+## Active Gameplay Markers
+Treat the screen as active gameplay when most of these are visible together:
+- Top HUD showing round, lives, and cash
+- Central map with a visible path / track
+- Bloons moving on the track, or a start-round / play control waiting to be tapped
+- Tower tray / monkey bar visible on one screen edge
+- Pause / speed / hero / upgrade controls visible around the HUD
 
-## Tower Placement Rules
-- Towers can ONLY be placed on **green/grass areas** — NOT on the bloon track
-- Visual feedback: **green circle** = valid placement, **red circle** = invalid
-- Sidebar towers: listed vertically on the RIGHT edge (x ≈ 980–1060px)
-- To place: **long-press** tower icon → **drag** to map → **release** on green zone
-- If placement fails (red circle) → drag to nearby grass area
-- After placement: tower menu appears showing upgrade paths
+If instead the screen mainly shows map names, difficulty buttons, or menu cards,
+it is not active gameplay.
 
-## Tower Types (OCR/Visual Reference)
-| Tower Name | Sidebar Icon | Primary Role |
-|---|---|---|
-| Dart Monkey | Dart icon | Basic popper |
-| Tack Shooter | Star/circle icon | Area damage |
-| Sniper Monkey | Rifle icon | Long range, CAMO |
-| Bomb Shooter | Bomb icon | Explosion AOE |
-| Super Monkey | Bat icon | Fastest fire rate |
-| Monkey Village | House icon | Buffs nearby towers |
-| Banana Farm | Banana icon | Generates cash |
-| Hero | Special icon | Powerful unique unit |
+## Tower Tray / Monkey Bar
+- The tower tray may appear on the right edge or on the bottom edge depending on layout
+- Towers are chosen from that tray and then dragged onto the map
+- Do not assume the tray is always on the right
 
----
+## Tower Placement
+- To place a tower: drag a visible tower icon from the tray onto an open buildable area
+- Buildable area is usually grass / land beside the path, not the path itself
+- Prefer large, safe, clearly open patches over tiny precise spots
+- Prefer positions near bends, intersections, or long sections of path
+- Avoid water, rocks, the path itself, and spots already occupied by towers
 
-## Round / Wave System
-- Rounds start from **Round 1**
-- Each round = a set of bloons traveling the track
-- OCR shows: **"ROUND X"** or **"R X/Y"** in top HUD
-- Between rounds: cash earned, tower upgrades possible
-- Boss rounds (certain round numbers) = very powerful bloon types
+## Simple Placement Policy
+- Prefer a cheap visible tower first
+- If multiple cheap towers are visible, prefer:
+  1. Dart Monkey
+  2. Tack Shooter
+  3. Bomb Shooter
+  4. Sniper Monkey
+- If the currently visible towers are too expensive, scroll the tray to reveal cheaper ones
 
-## Bloon Types (hardest to easiest)
-```
-BAD → ZOMG → BFB → MOAB → Fortified Ceramic → Ceramic → 
-Lead → Purple → White/Zebra → Black/White → Rainbow → Camo →
-Pink → Yellow → Green → Blue → Red
-```
-- **MOAB-class** (MOAB/BFB/ZOMG/BAD): huge bloons, very high HP
-- **Camo bloons**: invisible to most towers (need "Camo detection" upgrade)
-- **Lead bloons**: immune to sharp/energy — need explosives or fire
+## Hero Rules
+- A Hero is a special unit
+- Only one Hero can be placed in a game
+- Heroes level automatically; do not treat them like normal multi-path tower upgrades
 
----
+## Upgrade Rules
+- Normal towers can be upgraded after selection
+- If a tower is selected and an affordable, clearly visible upgrade button exists, tap one upgrade
+- Prefer simple affordable upgrades over deep path planning
+- If no upgrade is affordable, deselect and continue normal play
 
-## Upgrade System
-- Tap any placed tower → upgrade panel appears
-- **3 upgrade paths** shown as columns
-- Each path has 5 tiers (costs increase each tier)
-- **RULE**: Can max 2 paths; third path locks at tier 2 (shows padlock)
-- Look for: "UPGRADE" button with cost displayed
-- Grayed button = cannot afford (insufficient cash)
+## Speed / Round Controls
+- If a large green play / start-round button is visible and the round is not running, tap it
+- If a speed button is visible and clearly at low speed, one tap to increase speed is allowed
+- Do not spam speed or pause controls
 
-## Speed Controls
-- **1x / 2x / 3x** speed toggle: top-right HUD area (x ≈ 980, y ≈ 200)
-- Tap the speed button to cycle through speeds
-- At 3x: animation_score will be noticeably higher
+## Popup / End-State Handling
+- If defeat / game over is visible, prefer restart / replay / try again
+- If victory / round complete is visible, prefer next / continue
+- If reward / achievement / close popup appears, dismiss it and return to gameplay
 
-## Ability System (Hero / Special Towers)
-- Hero abilities appear as buttons in bottom-left HUD (x ≈ 100–200, y ≈ 1800–2000)
-- Ability button glows when READY (no cooldown overlay)
-- Greyed / clock overlay = on cooldown — do NOT tap
-- Tap ready ability for massive temporary boost
-
----
-
-## Detecting Active Gameplay (OCR Keywords)
-Any of these visible = gameplay is ACTIVE and running:
-```
-ROUND, R1, R2, LIVES, CASH, $, WAVE, BLOONS, MOAB, TOWER,
-MONKEY, DART, UPGRADE, SELL, SPEED, 1X, 2X, 3X, PLACE
-```
-
-## Detecting End States
-| OCR Text | Meaning | Action |
-|---|---|---|
-| "DEFEAT" or "GAME OVER" | Lost all lives | Tap "RESTART" or "HOME" |
-| "VICTORY" or "ROUND COMPLETE" | Won round | Tap "NEXT" or wait |
-| "ROUND 100 COMPLETE" | Won the game | Tap "HOME" |
-
----
-
-## Test Playbooks (use these when instructed)
-
-### Quick Start Test (default)
-Goal: Navigate from launch to Round 1 running
-1. Dismiss all popups
-2. Tap PLAY → select Monkey Meadow → EASY → STANDARD
-3. Dismiss tutorial if shown
-4. Place 1 Dart Monkey on grass (tap sidebar icon, drag to map)
-5. Tap the START/PLAY round button
-6. Verify: Round 1 bloons appear, animation running, ROUND 1 visible in OCR
-
-### Tower Sidebar Scroll Test
-Goal: Scroll sidebar to reveal hidden towers
-- Swipe UP on right sidebar (startX=1000, startY=1800, endY=500)
-- Verify: New tower icons appear in sidebar
-
-### Target Priority Cycle Test
-Goal: Cycle targeting FIRST → LAST → CLOSE → STRONG
-- Tap placed tower → find targeting button → cycle 4x
-- Verify OCR shows each target mode text after each tap
-
-### Defeat Recovery Test
-Goal: Handle defeat screen gracefully
-- Wait for "DEFEAT"/"GAME OVER" OCR
-- Tap "RESTART" to reset to Round 1
-- Verify: Lives restored, round counter = 1
+## Success Signals
+- Tower placement success:
+  - a new tower appears on the map, or
+  - a placement ring / tower selection panel appears, or
+  - cash decreases
+- Start-round success:
+  - bloons begin moving, or
+  - round HUD advances, or
+  - the big play / start-round button disappears
+- Upgrade success:
+  - cash decreases, or
+  - upgrade button state changes, or
+  - the selected tower panel changes
+- Speed success:
+  - the speed label changes, or
+  - gameplay visibly accelerates
