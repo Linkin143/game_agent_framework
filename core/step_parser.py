@@ -166,7 +166,7 @@ def parse_step(step: str) -> StepIntent:
     #   Type 'Foo' in the search field
     #   Enter 'Foo' in the search input field
     #   Input 'Foo' into username
-    if _looks_like_type_step(lower, bool(target_text)):
+    if _looks_like_type_step(lower, bool(target_text), action):
         action = "type"
 
     # ── repeat count ───────────────────────────────────────────────────────
@@ -264,13 +264,29 @@ def _build_target_desc(raw: str, target_text: Optional[str]) -> str:
     return desc
 
 
-def _looks_like_type_step(lower: str, has_quote: bool) -> bool:
+def _looks_like_type_step(lower: str, has_quote: bool, parsed_action: str) -> bool:
     """Return True when the step is clearly asking for text entry."""
     if not has_quote:
         return False
-    text_verbs = ("type ", "enter ", "input ", "fill ")
-    text_context = ("search", "input", "field", "textbox", "text box", "edittext", "edit text", "username", "email", "password")
-    return any(v in lower for v in text_verbs) or any(c in lower for c in text_context)
+
+    # If the primary parsed action is already a text-entry verb, trust it.
+    if parsed_action == "type":
+        return True
+
+    # Strong explicit type verbs should win.
+    if re.search(r'^\s*(type|enter|input|fill)\b', lower):
+        return True
+
+    # Allow quoted text to imply typing only when the sentence explicitly
+    # points into an input/search/text field.
+    has_input_context = bool(re.search(
+        r'\b(?:in|into)\s+(?:the\s+|a\s+|an\s+)?'
+        r'(?:search\s+)?(?:input|field|box|bar|textbox|text box|edittext|edit text|'
+        r'username|email|password)\b',
+        lower,
+    ))
+    has_type_language = bool(re.search(r'\b(type|enter|input|fill)\b', lower))
+    return has_input_context and has_type_language
 
 
 def _build_input_target_desc(raw: str, target_text: Optional[str]) -> str:

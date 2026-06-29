@@ -128,20 +128,19 @@ class LiteLLMService:
             "max_tokens": self.max_tokens,
         }
 
-        # Azure support
-        if self.model.startswith("azure/"):
+        provider = os.getenv("ACTIVE_PROVIDER", "").lower()
 
+        if self.model.startswith("azure/") or provider == "azure":
             kwargs["api_base"] = os.getenv("AZURE_API_BASE")
             kwargs["api_key"] = os.getenv("AZURE_API_KEY")
-            kwargs["api_version"] = os.getenv(
-                "AZURE_API_VERSION",
-                "2024-12-01-preview"
-            )
+            kwargs["api_version"] = os.getenv("AZURE_API_VERSION", "2024-12-01-preview")
+
+        elif provider == "huggingface":
+            kwargs["api_key"] = os.getenv("HUGGINGFACE_API_KEY")
+            # only if using dedicated endpoint:
+            # kwargs["api_base"] = os.getenv("HF_API_BASE")
         print("MODEL:", self.model)
 
-        print("AZURE_API_BASE =", os.getenv("AZURE_API_BASE"))
-        print("AZURE_API_KEY =", bool(os.getenv("AZURE_API_KEY")))
-        print("AZURE_API_VERSION =", os.getenv("AZURE_API_VERSION"))
         response = completion(**kwargs)
 
         class Response:

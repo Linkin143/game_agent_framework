@@ -18,7 +18,7 @@
     "Tap the 'Search' icon from the bottom navigation menu",
     "Wait 1 seconds",
     "Type 'Bloons TD6' in the search input field",
-    "Wait for 1 seconds to search results to populate",
+    "Wait for 1 seconds",
     "Verify 'Bloons TDS6' is displayed"
   ]
 }

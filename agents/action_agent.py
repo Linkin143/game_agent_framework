@@ -564,7 +564,20 @@ class ActionAgent(BaseAgent):
         Type text into a target input field or the currently focused field.
         """
         log: list[str] = []
-        wants_submit = "SEARCH" in (plan.target_description or "").upper()
+        target_upper = (plan.target_description or "").upper()
+        wants_submit = "SEARCH" in target_upper
+
+        if self._looks_like_non_input_target(target_upper):
+            log.append(f"TYPE guard blocked non-input target '{plan.target_description[:60]}'")
+            return ActionReport(
+                success=False,
+                tier_used=0,
+                method="type_guard_non_input_target",
+                coordinates=None,
+                action_type=at,
+                attempt_logs=log,
+                error="Type action points to a navigation/icon/menu target instead of an input field",
+            )
 
         for loc in plan.locators:
             lt = (loc.get("type") or "").lower()
@@ -631,6 +644,22 @@ class ActionAgent(BaseAgent):
             attempt_logs=log,
             error=f"Unable to type '{text[:40]}' into the target input field",
         )
+
+    @staticmethod
+    def _looks_like_non_input_target(target_upper: str) -> bool:
+        """Reject obvious nav/icon/menu/tab targets for type actions."""
+        if not target_upper:
+            return False
+        has_nav_terms = any(term in target_upper for term in (
+            " ICON", "ICON ", " MENU", "MENU ", " NAV", "NAVIGATION",
+            " TAB", "TAB ", " BUTTON", "BOTTOM BAR", "BOTTOM NAV",
+        ))
+        has_input_terms = any(term in target_upper for term in (
+            "INPUT", "FIELD", "SEARCH BAR", "SEARCH BOX", "TEXT BOX",
+            "TEXTBOX", "EDITTEXT", "EDIT TEXT", "USERNAME", "EMAIL", "PASSWORD",
+            "FOCUSED INPUT",
+        ))
+        return has_nav_terms and not has_input_terms
 
     def _capture_np(self):
         """Best-effort fresh screenshot as numpy for self-heal verification."""

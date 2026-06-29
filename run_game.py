@@ -40,6 +40,7 @@ except ImportError:
 
 from core.llm.llm_service import LiteLLMService
 from core.llm.model_registry import get_active_model
+from core.llm.model_registry import get_active_provider
 
 from config.capabilities import get_driver
 from core.screen_capture     import ScreenCapturer
@@ -94,6 +95,7 @@ def build_framework(driver, app_package: str = "") -> dict:
     temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
 )
 
+    print(f"[run_game] Active Provider: {get_active_provider()}")
     print(f"[run_game] Active Model: {get_active_model()}")
     
     device_serial = os.getenv("DEVICE_UDID", "93b3d10f71da")
