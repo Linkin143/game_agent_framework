@@ -44,9 +44,9 @@ If the current subgoal/step text contains any of:
 | `"Launch the game and wait for 40 seconds to load"` | `"40.0"` |
 | `"wait 15 seconds for server connection"` | `"15.0"` |
 
-**B. Screen-Detected Loading State (OCR/vision signals)**
+**B. Screen-Detected Loading State (on-screen indicators)**
 
-If OCR text or screenshot visually shows ANY of these keywords:
+If on-screen text or the screenshot clearly shows ANY of these loading indicators:
 ```
 Loading       Loading...    Please wait
 Downloading   Download XX%
@@ -56,7 +56,7 @@ Initializing  Preparing     Waiting for server
 ```
 → Set `action_type: "wait"`, `type_payload: "3.0"`
 
-**Combined rule:** If the step says `"wait"` (no explicit duration) AND OCR shows a loading keyword → wait `3.0` seconds.
+**Combined rule:** If the step says `"wait"` (no explicit duration) AND the current screen shows a loading indicator → wait `3.0` seconds.
 
 **Important:** `type_payload` for wait MUST be a plain string number (e.g. `"40.0"`, `"3.0"`, `"15.0"`). Do NOT include units.
 
@@ -65,7 +65,7 @@ Initializing  Preparing     Waiting for server
 ### Step 3: Action Planning
 Once blocking elements are cleared, plan the next micro-action toward the subgoal:
 
-**For game navigation**, use OCR and vision to find:
+**For game navigation**, use visible labels and vision to find:
 - Buttons labeled: PLAY, START, ENTER, BEGIN, GO, CONTINUE, NEXT, OK, CLAIM
 - Visual patterns: large colorful buttons, highlighted/pulsing UI elements
 - Position heuristics: main action buttons are typically center-bottom of screen
@@ -74,8 +74,8 @@ Once blocking elements are cleared, plan the next micro-action toward the subgoa
 ```
 1. accessibility_id (acc_id)    ← most reliable
 2. resource_id (res_id)         ← second choice
-3. text exact match             ← from XML or OCR
-4. OCR bounding box center      ← when XML has no element
+3. text exact match             ← from XML or on-screen text
+4. OCR bounding box center      ← when XML has no element but text is visible
 5. Template match coordinates   ← from reference_assets/
 6. Calibration grid estimate    ← fallback spatial anchor
 ```
@@ -114,7 +114,7 @@ Rate your confidence 0.0–1.0:
 ## Game-Specific Decision Rules
 
 ### When XML tree is empty (game canvas / Unity / Unreal):
-1. Rely entirely on OCR text and screenshot vision
+1. Rely entirely on visible on-screen text and screenshot vision
 2. Use template matching from reference_assets/ if available
 3. Use calibration grid spatial reasoning: "button is in region E7-F8"
 

@@ -10,11 +10,8 @@ from agents.decision_agent import DecisionPlan
 from agents.perception_agent import PerceptionState
 from core.image_analyzer import ImageAnalyzer
 from core.screen_semantics import (
-    extract_keywords,
-    newly_visible_keywords,
     screen_matches,
     summarize_perception,
-    visible_keywords,
 )
 
 
@@ -49,7 +46,7 @@ class VerificationAgent(BaseAgent):
         self._game_skill = game_skill
         self._game_hud_keywords = self._extract_hud_keywords(game_skill)
         if self._game_hud_keywords:
-            print(f"[verification_agent] Game HUD keywords loaded: {self._game_hud_keywords[:10]}")
+            print(f"[verification_agent] Game HUD markers loaded: {self._game_hud_keywords[:10]}")
 
     def verify(
         self,
@@ -121,10 +118,6 @@ class VerificationAgent(BaseAgent):
         evidence: list[str],
     ) -> VerificationResult:
         post_text = post.all_text.upper()
-        goal_keywords = extract_keywords(goal, limit=8)
-        goal_hits = visible_keywords(post_summary, goal_keywords)
-        evidence.append(f"goal_keywords={goal_keywords}")
-        evidence.append(f"goal_hits={goal_hits}")
 
         if decision_plan is not None:
             contract = self._verify_plan_contract(
@@ -132,7 +125,6 @@ class VerificationAgent(BaseAgent):
                 post_summary=post_summary,
                 action_report=action_report,
                 decision_plan=decision_plan,
-                goal_hits=goal_hits,
                 diff=diff,
                 evidence=evidence,
             )
@@ -149,7 +141,7 @@ class VerificationAgent(BaseAgent):
         if (
             post_summary.kind == "ACTIVE_GAMEPLAY"
             and (gameplay_hits or post.animation_score > 0.02)
-            and any(token in " ".join(goal_keywords) for token in ("GAMEPLAY", "PLAY", "WATCH", "RUN"))
+            and any(token in (goal or "").upper() for token in ("GAMEPLAY", "PLAY", "WATCH", "RUN"))
         ):
             return VerificationResult(
                 verdict="GOAL_ACHIEVED",
@@ -213,23 +205,22 @@ class VerificationAgent(BaseAgent):
         post_summary,
         action_report: ActionReport,
         decision_plan: DecisionPlan,
-        goal_hits: list[str],
         diff: float,
         evidence: list[str],
     ) -> Optional[VerificationResult]:
-        expected_keywords = [str(k).upper().strip() for k in (decision_plan.expected_keywords or []) if str(k).strip()]
-        forbidden_keywords = [str(k).upper().strip() for k in (decision_plan.forbidden_outcomes or []) if str(k).strip()]
-        new_hits = newly_visible_keywords(pre_summary, post_summary, expected_keywords)
-        visible_hits = visible_keywords(post_summary, expected_keywords)
         expected_screen_match = screen_matches(post_summary, decision_plan.expected_next_screen)
         expected_type_match = screen_matches(post_summary, decision_plan.expected_screen_type)
-        forbidden_hits = visible_keywords(post_summary, forbidden_keywords)
+        forbidden_hits = self._forbidden_outcome_hits(post_summary, decision_plan.forbidden_outcomes)
         same_screen = pre_summary.signature == post_summary.signature
         meaningful_change = diff > 0.02 or not same_screen
-        progress_hits = list(dict.fromkeys(new_hits + visible_hits + goal_hits))
-        progress_improved = bool(progress_hits or expected_screen_match or expected_type_match)
+        progress_improved = bool(expected_screen_match or expected_type_match or meaningful_change)
         likely_goal_reached = bool(
-            goal_hits and (expected_screen_match or expected_type_match or post_summary.kind == "ACTIVE_GAMEPLAY")
+            expected_screen_match
+            or expected_type_match
+            or (
+                post_summary.kind == "ACTIVE_GAMEPLAY"
+                and (decision_plan.goal_status in {"at_goal", "ahead"} or "GAMEPLAY" in decision_plan.expected_screen_type.upper())
+            )
         )
 
         evidence.append(f"plan_observed={decision_plan.observed_screen}")
@@ -237,12 +228,8 @@ class VerificationAgent(BaseAgent):
         evidence.append(f"plan_expected_screen_type={decision_plan.expected_screen_type}")
         evidence.append(f"plan_success_condition={decision_plan.success_condition}")
         evidence.append(f"plan_goal_progress_hint={decision_plan.goal_progress_hint}")
-        evidence.append(f"plan_expected_keywords={expected_keywords}")
-        evidence.append(f"plan_forbidden={forbidden_keywords}")
+        evidence.append(f"plan_forbidden={decision_plan.forbidden_outcomes}")
         evidence.append(f"plan_goal_status={decision_plan.goal_status}")
-        evidence.append(f"plan_new_hits={new_hits}")
-        evidence.append(f"plan_visible_hits={visible_hits}")
-        evidence.append(f"plan_goal_hits={goal_hits}")
         evidence.append(f"plan_expected_screen_match={expected_screen_match}")
         evidence.append(f"plan_expected_type_match={expected_type_match}")
         evidence.append(f"plan_forbidden_hits={forbidden_hits}")
@@ -303,8 +290,6 @@ class VerificationAgent(BaseAgent):
             reason = (
                 f"Action advanced the shared contract: '{pre_summary.label}' -> '{post_summary.label}'"
             )
-            if progress_hits:
-                reason += f" with evidence {progress_hits[:4]}"
             return VerificationResult(
                 verdict="ACTION_SUCCESS",
                 subgoal_complete=False,
@@ -352,6 +337,7 @@ class VerificationAgent(BaseAgent):
         evidence.append(f"step={step_index}/{max(total_steps - 1, 0)}")
         step_upper = step_text.upper()
         post_text = post.all_text.upper()
+        post_summary = summarize_perception(post)
 
         is_verify_step = any(v in step_upper for v in ["VERIFY", "CHECK", "CONFIRM", "ENSURE", "ASSERT"])
         is_last_step = (total_steps > 0 and step_index >= total_steps - 1)
@@ -374,6 +360,39 @@ class VerificationAgent(BaseAgent):
                 )
 
         if is_verify_step:
+            if self._is_gameplay_verify_step(step_upper):
+                gameplay_hits = self._gameplay_verify_hits(post_text)
+                evidence.append(f"gameplay_verify_hits={gameplay_hits}")
+                if post_summary.kind == "ACTIVE_GAMEPLAY" and gameplay_hits:
+                    step_complete = True
+                    reason = (
+                        "Gameplay verification passed from screen truth: "
+                        f"{post_summary.label} with HUD evidence {gameplay_hits[:4]}"
+                    )
+                else:
+                    step_complete = False
+
+                if step_complete:
+                    if is_last_step:
+                        return VerificationResult(
+                            verdict="GOAL_ACHIEVED",
+                            subgoal_complete=True,
+                            goal_achieved=True,
+                            pixel_diff_score=diff,
+                            evidence=evidence,
+                            next_subgoal=None,
+                            reasoning=reason,
+                        )
+                    return VerificationResult(
+                        verdict="SUBGOAL_COMPLETE",
+                        subgoal_complete=True,
+                        goal_achieved=False,
+                        pixel_diff_score=diff,
+                        evidence=evidence,
+                        next_subgoal=None,
+                        reasoning=reason,
+                    )
+
             vlm_verified = (
                 action_report.action_type in ("verify", "confirm", "assert", "check_state", "check")
                 and action_report.success
@@ -382,12 +401,10 @@ class VerificationAgent(BaseAgent):
                 step_complete = True
                 reason = f"VLM visually confirmed step: '{step_text[:50]}'"
             else:
-                keywords = self._extract_step_keywords(step_text)
-                found = [kw for kw in keywords if kw in post_text]
-                evidence.append(f"verify_kws_found={found}")
-                if found:
+                state_verified, reason = self._verify_step_by_screen_state(step_upper, post_summary, post_text)
+                evidence.append(f"screen_state_verified={state_verified}")
+                if state_verified:
                     step_complete = True
-                    reason = f"Step '{step_text[:50]}' confirmed via OCR: {found}"
                 else:
                     return VerificationResult(
                         verdict="ACTION_SUCCESS",
@@ -396,7 +413,7 @@ class VerificationAgent(BaseAgent):
                         pixel_diff_score=diff,
                         evidence=evidence,
                         next_subgoal=step_text,
-                        reasoning=f"Verify step waiting for OCR tokens {keywords[:5]}",
+                        reasoning="Verify step waiting for screen-state confirmation",
                     )
         else:
             screen_changed = diff > 0.015 or is_wait_action or action_report.success
@@ -446,16 +463,65 @@ class VerificationAgent(BaseAgent):
             reasoning=reason,
         )
 
+    def _gameplay_verify_hits(self, post_text: str) -> list[str]:
+        hits: list[str] = []
+        gameplay_words = self._game_hud_keywords or [
+            "ROUND", "LIVES", "CASH", "UPGRADES", "WAVE", "HERO", "TOWER",
+        ]
+        for kw in gameplay_words:
+            if kw in post_text:
+                hits.append(kw)
+        if "$" in post_text:
+            hits.append("$")
+        if re.search(r"\b\d+/\d+\b", post_text):
+            hits.append("ROUND_FRACTION")
+        return hits
+
     @staticmethod
-    def _extract_step_keywords(step_text: str) -> list[str]:
-        stop = {
-            "THE", "AND", "FOR", "THAT", "WITH", "FROM", "ARE", "WAS",
-            "HAS", "HAVE", "BEEN", "WILL", "THIS", "THEN", "INTO",
-            "ANY", "WHEN", "OVER", "ALSO", "SHOULD", "APPEAR", "VISIBLE",
-            "VERIFY", "CHECK", "CONFIRM", "ENSURE", "ASSERT",
-        }
-        words = re.findall(r"[A-Za-z]+", step_text.upper())
-        return [w for w in words if len(w) > 3 and w not in stop]
+    def _is_gameplay_verify_step(step_upper: str) -> bool:
+        if not step_upper:
+            return False
+        wants_verify = any(v in step_upper for v in ("VERIFY", "CHECK", "CONFIRM", "ENSURE", "ASSERT"))
+        gameplay_terms = any(term in step_upper for term in ("GAMEPLAY", "ROUND", "LIVES", "CASH"))
+        return wants_verify and gameplay_terms
+
+    def _verify_step_by_screen_state(self, step_upper: str, post_summary, post_text: str) -> tuple[bool, str]:
+        if any(term in step_upper for term in ("LOADING", "CONNECTING", "WAITING")):
+            if post_summary.kind == "LOADING":
+                return True, f"Step confirmed on loading screen '{post_summary.label}'"
+
+        if any(term in step_upper for term in ("DIALOG", "POPUP", "PERMISSION")):
+            if post_summary.kind == "DIALOG":
+                return True, f"Step confirmed on dialog screen '{post_summary.label}'"
+
+        if any(term in step_upper for term in ("MAP", "LEVEL", "MODE", "DIFFICULTY", "SELECT")):
+            if post_summary.kind == "SELECTION":
+                return True, f"Step confirmed on selection screen '{post_summary.label}'"
+
+        if any(term in step_upper for term in ("MENU", "HOME")):
+            if post_summary.kind in {"MENU", "UI_SCREEN"}:
+                return True, f"Step confirmed on menu-like screen '{post_summary.label}'"
+
+        if any(term in step_upper for term in ("SEARCH", "RESULT", "JOIN", "ROOM", "LOBBY")):
+            if post_summary.kind in {"UI_SCREEN", "MENU", "SELECTION"} and post_summary.label:
+                return True, f"Step confirmed on UI screen '{post_summary.label}'"
+
+        return False, ""
+
+    @staticmethod
+    def _forbidden_outcome_hits(post_summary, forbidden_outcomes: list[str]) -> list[str]:
+        if not forbidden_outcomes:
+            return []
+        label_upper = (post_summary.label or "").upper()
+        keyword_set = set(post_summary.keywords or [])
+        hits: list[str] = []
+        for item in forbidden_outcomes:
+            value = str(item or "").strip().upper()
+            if not value:
+                continue
+            if value in label_upper or value in keyword_set:
+                hits.append(value)
+        return hits
 
     @staticmethod
     def _extract_hud_keywords(game_skill: str) -> list[str]:
@@ -465,7 +531,15 @@ class VerificationAgent(BaseAgent):
         inside_section = False
         for line in game_skill.splitlines():
             line_upper = line.strip().upper()
-            if "DETECTING ACTIVE GAMEPLAY" in line_upper or "OCR KEYWORDS" in line_upper:
+            if any(
+                marker in line_upper
+                for marker in (
+                    "DETECTING ACTIVE GAMEPLAY",
+                    "HUD MARKERS",
+                    "GAMEPLAY MARKERS",
+                    "OCR KEYWORDS",  # legacy skill text support
+                )
+            ):
                 inside_section = True
                 continue
             if inside_section and line.startswith("##"):

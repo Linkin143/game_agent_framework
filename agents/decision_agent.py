@@ -26,8 +26,8 @@ _WAIT_DUR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# OCR keywords that indicate a loading / connecting / pending screen state
-_LOADING_KEYWORDS: frozenset[str] = frozenset({
+# Screen text indicators that usually mean loading / connecting / pending
+_LOADING_INDICATORS: frozenset[str] = frozenset({
     "loading", "downloading", "connecting", "reconnecting",
     "processing", "pending", "syncing", "please wait",
     "initializing", "preparing", "server connection",
@@ -85,7 +85,6 @@ class DecisionPlan:
     observed_screen:     str = ""
     expected_next_screen: str = ""
     expected_outcome:    str = ""
-    expected_keywords:   list[str] = field(default_factory=list)
     goal_status:         str = "on_path"   # on_path | ahead | at_goal | blocked
     success_condition:   str = ""
     expected_screen_type: str = ""
@@ -473,15 +472,15 @@ class DecisionAgent(BaseAgent):
         allow_words = ["ALLOW", "ACCEPT", "AGREE", "OK", "PERMIT"]
 
         # ── PRIORITY 0: Dynamic Wait Detection ───────────────────────────
-        # Checks step text for an explicit duration AND OCR for loading
-        # keywords.  Returns a wait hint BEFORE any tap logic so a step
+        # Checks step text for an explicit duration AND current screen text for
+        # loading indicators. Returns a wait hint BEFORE any tap logic so a step
         # like "wait for 40 seconds to load" is never converted to a tap.
         should_wait, wait_dur, wait_reason = self._detect_wait_condition(
             subgoal, p.all_text
         )
         if should_wait:
             # High confidence when the step text explicitly names a duration;
-            # slightly lower when we infer from OCR loading keywords only.
+            # slightly lower when we infer from screen loading indicators only.
             conf = 0.95 if "specifies" in wait_reason else 0.80
             print(f"[decision_agent] Dynamic wait hint: {wait_reason} "
                   f"({wait_dur}s, conf={conf:.2f})")
@@ -598,10 +597,10 @@ class DecisionAgent(BaseAgent):
         Three sources checked in priority order:
           1. Explicit duration in step/subgoal text
              e.g. "wait for 40 seconds to load" → (True, 40.0, "Step specifies wait 40s")
-          2. Step says "wait" (no duration) + OCR shows loading keyword
+          2. Step says "wait" (no duration) + screen text shows a loading indicator
              e.g. "wait for Play screen" + OCR "Loading…" → (True, 3.0, "…")
-          3. OCR shows clear loading keyword only (no wait in step)
-             e.g. OCR "Connecting to server" → (True, 3.0, "…") (lower-conf hint)
+          3. Screen text shows a clear loading indicator only (no wait in step)
+             e.g. text "Connecting to server" → (True, 3.0, "…") (lower-conf hint)
         """
         # Source 1: explicit numeric duration in the step text
         m = _WAIT_DUR_RE.search(subgoal)
@@ -609,21 +608,21 @@ class DecisionAgent(BaseAgent):
             dur = float(m.group(1))
             return True, dur, f"Step specifies wait {dur}s"
 
-        # Source 2 + 3: step says "wait" AND/OR OCR loading keyword
+        # Source 2 + 3: step says "wait" AND/OR current screen indicates loading
         step_says_wait = bool(re.search(r'\bwait\b', subgoal, re.IGNORECASE))
         ocr_lower      = all_text.lower()
         loading_hit    = next(
-            (kw for kw in _LOADING_KEYWORDS if kw in ocr_lower), None
+            (kw for kw in _LOADING_INDICATORS if kw in ocr_lower), None
         )
 
         if step_says_wait and loading_hit:
             return True, 3.0, (
-                f"Step says 'wait' + OCR loading keyword: '{loading_hit}'"
+                f"Step says 'wait' + screen loading indicator: '{loading_hit}'"
             )
 
         if loading_hit:
             # Screen is loading even without an explicit wait in the step
-            return True, 3.0, f"OCR loading keyword detected: '{loading_hit}'"
+            return True, 3.0, f"Screen loading indicator detected: '{loading_hit}'"
 
         return False, 0.0, ""
 
@@ -801,12 +800,11 @@ class DecisionAgent(BaseAgent):
             f"  - observed_screen      : short label of the current screen you see now\n"
             f"  - expected_next_screen : short label of the screen expected AFTER success\n"
             f"  - expected_outcome     : concise description of success condition\n"
-            f"  - expected_keywords    : 1-6 OCR/accessibility words expected after success\n"
             f"  - goal_status          : 'on_path', 'ahead', 'at_goal', or 'blocked'\n"
             f"  - success_condition    : one-line rule that makes this action count as success\n"
             f"  - expected_screen_type : short class like MENU / DIALOG / ACTIVE_GAMEPLAY\n"
             f"  - goal_progress_hint   : how success moves the overall goal forward\n"
-            f"  - forbidden_outcomes   : 0-4 words/screens that indicate wrong progress\n"
+            f"  - forbidden_outcomes   : 0-4 screens/outcomes that indicate wrong progress\n"
             f"  If the screenshot already shows gameplay or a later screen than the\n"
             f"  workflow hint, do NOT force the stale subgoal. Prefer verify/wait and\n"
             f"  set goal_status='ahead' or 'at_goal'.\n\n"
@@ -828,7 +826,7 @@ class DecisionAgent(BaseAgent):
             f"ENGINE: {p.rendering_engine}\n"
             f"OCR: {p.all_text[:200]}\n"
             "Return JSON with action_type, locators, confidence, reasoning, "
-            "observed_screen, expected_next_screen, expected_outcome, expected_keywords, "
+            "observed_screen, expected_next_screen, expected_outcome, "
             "goal_status, success_condition, expected_screen_type, goal_progress_hint, "
             "forbidden_outcomes."
         )
@@ -901,10 +899,6 @@ class DecisionAgent(BaseAgent):
         plan.observed_screen = str(raw.get("observed_screen", "") or "")
         plan.expected_next_screen = str(raw.get("expected_next_screen", "") or "")
         plan.expected_outcome = str(raw.get("expected_outcome", "") or "")
-        raw_keywords = raw.get("expected_keywords", []) or []
-        if isinstance(raw_keywords, str):
-            raw_keywords = extract_keywords(raw_keywords, limit=6)
-        plan.expected_keywords = [str(x).upper() for x in raw_keywords if str(x).strip()][:6]
         plan.goal_status = str(raw.get("goal_status", "on_path") or "on_path").lower()
         plan.success_condition = str(raw.get("success_condition", "") or "")
         plan.expected_screen_type = str(raw.get("expected_screen_type", "") or "")
@@ -938,15 +932,6 @@ class DecisionAgent(BaseAgent):
                 plan.reasoning
                 or plan.target_description
                 or f"Advance toward {plan.expected_next_screen}"
-            )
-
-        if not plan.expected_keywords:
-            plan.expected_keywords = extract_keywords(
-                plan.expected_next_screen,
-                plan.expected_outcome,
-                plan.target_description,
-                current_subgoal,
-                limit=6,
             )
 
         if not plan.goal_status or plan.goal_status == "unknown":
@@ -984,7 +969,44 @@ class DecisionAgent(BaseAgent):
                 limit=4,
             )
 
+        # If the VLM has already concluded that gameplay is active and the
+        # current step is a gameplay verification step, normalize any passive
+        # wait plan into a plan-only verify action. This prevents spurious
+        # 3-second waits caused by OCR-noise-triggered wait fallbacks.
+        if self._should_force_verify_gameplay(plan, summary, current_subgoal):
+            plan.action_type = "verify"
+            plan.type_payload = ""
+            if not plan.target_description:
+                plan.target_description = "Gameplay is already active and verified"
+            plan.reasoning = (
+                f"{plan.reasoning} "
+                "Normalized wait to verify because gameplay is already confirmed active."
+            ).strip()
+
         return plan
+
+    @staticmethod
+    def _should_force_verify_gameplay(
+        plan: DecisionPlan,
+        summary,
+        current_subgoal: str,
+    ) -> bool:
+        if (plan.action_type or "").lower() not in {"wait", "sleep", "pause"}:
+            return False
+        step_upper = (current_subgoal or "").upper()
+        is_verify_step = any(v in step_upper for v in ("VERIFY", "CHECK", "CONFIRM", "ENSURE", "ASSERT"))
+        gameplay_terms = any(term in step_upper for term in ("GAMEPLAY", "ROUND", "LIVES", "CASH"))
+        if not (is_verify_step and gameplay_terms):
+            return False
+        if getattr(summary, "kind", "") != "ACTIVE_GAMEPLAY":
+            return False
+        goal_status = (plan.goal_status or "").lower()
+        expected_type = (plan.expected_screen_type or "").upper()
+        expected_screen = (plan.expected_next_screen or "").upper()
+        return (
+            goal_status in {"at_goal", "ahead"}
+            and ("ACTIVE_GAMEPLAY" in {expected_type, expected_screen} or "GAMEPLAY" in expected_screen)
+        )
 
 
     def _fallback_plan(self, p: PerceptionState, subgoal: str) -> DecisionPlan:

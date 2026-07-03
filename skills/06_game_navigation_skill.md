@@ -68,7 +68,7 @@ Gameplay Confirmation:
 ### Package: `com.kiloo.subwaysurf`
 ```
 Main Menu → TAP TO PLAY (anywhere) → Gameplay immediately starts
-Key OCR text: "TAP TO PLAY", "HIGH SCORE"
+Key on-screen text: "TAP TO PLAY", "HIGH SCORE"
 ```
 
 ---
@@ -86,7 +86,7 @@ Key: Large village canvas with buildings = GAMEPLAY ACTIVE
 ### Package: `com.innersloth.spacemafia`
 ```
 Main Menu → ONLINE / LOCAL → Room selection → GAMEPLAY
-Key OCR: "ONLINE", "LOCAL", "CREATE GAME", "JOIN GAME"
+Key on-screen text: "ONLINE", "LOCAL", "CREATE GAME", "JOIN GAME"
 ```
 
 ---
@@ -95,7 +95,7 @@ Key OCR: "ONLINE", "LOCAL", "CREATE GAME", "JOIN GAME"
 
 ### Finding the "Play" Button
 Search in this order:
-1. OCR text: "PLAY", "START", "BEGIN", "ENTER", "GO"
+1. Visible text (native or OCR): "PLAY", "START", "BEGIN", "ENTER", "GO"
 2. Large bright button in center-bottom third of screen
 3. Template match: reference_assets/play_button_*.png
 4. Calibration grid: try region D8-E10 (center-bottom area)
@@ -103,10 +103,10 @@ Search in this order:
 ### Finding Level Selection
 After tapping Play:
 1. Look for grid of thumbnails or numbered buttons
-2. OCR: "LEVEL", "STAGE", "WORLD", numbered items
+2. Visible labels: "LEVEL", "STAGE", "WORLD", numbered items
 3. Tap first/easiest available (leftmost, top-most)
 
 ### Confirming Gameplay
 1. Pixel diff between frames > 0.05 (animation running)
-2. OCR finds: score, timer, health/lives, coins
+2. On-screen HUD shows: score, timer, health/lives, coins
 3. No menu buttons visible in center of screen

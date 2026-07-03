@@ -153,11 +153,11 @@ If the current subgoal says `"wait for X seconds"` / `"wait X seconds"` / `"wait
 | `"wait for 5 seconds"` | `"5.0"` |
 
 **Source 2 — Screen-detected loading state:**
-If OCR shows any loading keyword (Loading / Downloading / Connecting / Processing /
+If the current screen shows any loading indicator text (Loading / Downloading / Connecting / Processing /
 Pending / Please wait / Reconnecting / Initializing / Syncing / Waiting for server):
 → `type_payload: "3.0"`
 
-**Combined:** Subgoal says `"wait"` (no explicit number) AND OCR shows loading → `"3.0"`
+**Combined:** Subgoal says `"wait"` (no explicit number) AND the screen shows loading → `"3.0"`
 
 **IMPORTANT:** `type_payload` MUST be a plain string number — NO units, NO text.
 ✅ Correct: `"40.0"` &nbsp; `"3.0"` &nbsp; `"15.0"`
@@ -173,7 +173,7 @@ Pending / Please wait / Reconnecting / Initializing / Syncing / Waiting for serv
 ```json
 {
   "action_type": "wait",
-  "target_description": "OCR loading keyword detected: 'connecting'",
+  "target_description": "Screen loading indicator detected: 'connecting'",
   "type_payload": "3.0"
 }
 ```
@@ -215,7 +215,7 @@ Pending / Please wait / Reconnecting / Initializing / Syncing / Waiting for serv
 | Zoom out of game map | `zoom_out` |
 | Double-tap confirm / zoom | `double_tap` |
 | Step says "wait for X seconds" | `wait` with `type_payload="X"` |
-| OCR shows Loading / Connecting / Downloading | `wait` with `type_payload="3.0"` |
+| Screen shows Loading / Connecting / Downloading | `wait` with `type_payload="3.0"` |
 | Loading screen / animation | `wait` |
 | Popup blocking progress | `back` or `tap` the X button |
 
