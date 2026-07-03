@@ -76,65 +76,7 @@ class GameSkillLoader:
         """
         return cls._load_md_files(app_package, skip_navigation=True)
 
-    @classmethod
-    def load_multiplayer_skill(cls, app_package: str) -> str:
-        """
-        Load ONLY multiplayer skill .md files from:
-            game_skills/<app_package>/multiplayer/*.md
-
-        Returns "" if no multiplayer skill directory or no .md files exist.
-        """
-        if not app_package:
-            return ""
-
-        skill_dir = cls._find_multiplayer_skill_dir(app_package)
-        if skill_dir is None:
-            print(f"[game_skill_loader] No multiplayer skill found for: {app_package}")
-            print(
-                f"[game_skill_loader] Expected path: "
-                f"{GAME_SKILLS_DIR / app_package / 'multiplayer'}/"
-            )
-            return ""
-        return cls._load_md_files_from_dir(
-            skill_dir,
-            mode_label="multiplayer",
-            app_package=app_package,
-        )
-
-    @classmethod
-    def load_multiplayer_role_skill(cls, app_package: str, role: str) -> str:
-        """
-        Load multiplayer skill text and annotate it with the active role.
-
-        This keeps the filesystem layout simple while still letting callers
-        provide a role-aware prompt context to host / guest workers.
-        """
-        skill = cls.load_multiplayer_skill(app_package)
-        if not skill:
-            return ""
-        role_norm = (role or "").strip().upper() or "UNSPECIFIED"
-        return f"## ACTIVE MULTIPLAYER ROLE\n{role_norm}\n\n{skill}"
-
-    @classmethod
-    def load_multiplayer_file(cls, app_package: str, stem_prefix: str) -> str:
-        """
-        Load one multiplayer markdown file by stem prefix from:
-            game_skills/<app_package>/multiplayer/*.md
-
-        Example prefixes:
-            "01_roles", "02_room_flow", "03_match_flow", "04_recovery"
-        """
-        if not app_package or not stem_prefix:
-            return ""
-        skill_dir = cls._find_multiplayer_skill_dir(app_package)
-        if skill_dir is None:
-            return ""
-        prefix = stem_prefix.strip().lower()
-        for md in sorted(skill_dir.glob("*.md")):
-            if md.stem.lower().startswith(prefix):
-                return md.read_text(encoding="utf-8").strip()
-        return ""
-
+    
     @classmethod
     def _load_md_files(cls, app_package: str, skip_navigation: bool) -> str:
         """Internal helper: load .md files with optional navigation filtering."""
@@ -184,26 +126,7 @@ class GameSkillLoader:
             "skill_files":      [f.name for f in files],
         }
 
-    @classmethod
-    def get_multiplayer_info(cls, app_package: str) -> dict:
-        """
-        Return metadata about multiplayer skill files for `app_package`.
-        """
-        skill_dir = cls._find_multiplayer_skill_dir(app_package)
-        if skill_dir is None:
-            return {
-                "app_package": app_package,
-                "skill_found": False,
-                "skill_dir": str(GAME_SKILLS_DIR / app_package / "multiplayer"),
-                "skill_files": [],
-            }
-        files = sorted(skill_dir.glob("*.md"))
-        return {
-            "app_package": app_package,
-            "skill_found": True,
-            "skill_dir": str(skill_dir),
-            "skill_files": [f.name for f in files],
-        }
+    
 
     @classmethod
     def list_available(cls) -> list[str]:
@@ -216,17 +139,6 @@ class GameSkillLoader:
             and any(d.glob("*.md"))
         ]
 
-    @classmethod
-    def list_available_multiplayer(cls) -> list[str]:
-        """Return all package names that have a multiplayer skill folder."""
-        if not GAME_SKILLS_DIR.exists():
-            return []
-        out: list[str] = []
-        for d in sorted(GAME_SKILLS_DIR.iterdir()):
-            mp_dir = d / "multiplayer"
-            if d.is_dir() and not d.name.startswith(".") and mp_dir.is_dir() and any(mp_dir.glob("*.md")):
-                out.append(d.name)
-        return out
 
     # -------------------------------------------------------------------------
     # Private
@@ -278,11 +190,3 @@ class GameSkillLoader:
                 return d
 
         return None
-
-    @classmethod
-    def _find_multiplayer_skill_dir(cls, app_package: str) -> Optional[Path]:
-        skill_dir = cls._find_skill_dir(app_package)
-        if skill_dir is None:
-            return None
-        exact = skill_dir / "multiplayer"
-        return exact if exact.is_dir() else None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Iterable
+
 
 
 _STOPWORDS = {
@@ -105,20 +105,6 @@ def screen_matches(summary: ScreenSummary, label: str) -> bool:
         return True
     wanted_kind = _infer_kind_from_keywords(set(want))
     return bool(wanted_kind and wanted_kind == summary.kind)
-
-
-def newly_visible_keywords(pre: ScreenSummary, post: ScreenSummary, wanted: Iterable[str]) -> list[str]:
-    want = [str(w).upper().strip() for w in wanted if str(w).strip()]
-    pre_set = set(pre.keywords)
-    post_set = set(post.keywords)
-    return [w for w in want if w in post_set and w not in pre_set]
-
-
-def visible_keywords(summary: ScreenSummary, wanted: Iterable[str]) -> list[str]:
-    want = [str(w).upper().strip() for w in wanted if str(w).strip()]
-    have = set(summary.keywords)
-    return [w for w in want if w in have]
-
 
 def _infer_kind(
     token_set: set[str],
